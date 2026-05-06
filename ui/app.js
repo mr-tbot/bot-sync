@@ -2373,6 +2373,27 @@ rule + include, and alias IP. The USB drive is left untouched.</p>
     welcome modal, mock mode for desktop development.
   </dd>
 </dl>
+
+<h3>License &amp; acknowledgements</h3>
+<p>BOT-SYNC is released under the
+<a href="https://opensource.org/licenses/MIT" target="_blank" rel="noopener">MIT License</a>.
+The daemon itself is pure Python 3 standard library plus vanilla
+HTML/CSS/JS &mdash; no bundled third-party packages.</p>
+<p><strong>Massive thanks to the
+<a href="https://rclone.org" target="_blank" rel="noopener">rclone</a>
+project</strong> (MIT, &copy; Nick Craig-Wood and contributors). Every
+cloud / FTP / FTPS / SFTP / HTTP transfer in BOT-SYNC is implemented as
+an <code>rclone</code> subprocess call. The installer downloads an
+unmodified upstream rclone binary from
+<code>downloads.rclone.org</code> onto your USB drive at install time;
+nothing is forked or redistributed.</p>
+<p>BOT-SYNC also rides on top of the
+<a href="https://openwrt.org" target="_blank" rel="noopener">OpenWrt</a>
+platform tools (UCI, dnsmasq, Samba, mDNSResponder, iptables, nfsd) and
+calls the Google Drive / Dropbox / Box / OneDrive APIs through rclone &mdash;
+use of those APIs is governed by each vendor's Terms of Service.
+Trademarks belong to their respective owners. Full attribution lives in
+<code>THIRD_PARTY_LICENSES.md</code> in the repository.</p>
 `;
 
 // ----- master switch banner -----

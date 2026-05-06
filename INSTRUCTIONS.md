@@ -531,3 +531,7 @@ python3 install/install.py --target windows     --uninstall   # from Admin Power
 
 User data (the rclone config, downloaded folders, state file) is **not**
 removed unless you also delete the install directory afterwards.
+
+## License & acknowledgements
+
+BOT-SYNC is MIT-licensed. Cloud / FTP / SFTP / HTTP transfers are powered by the unmodified upstream [rclone](https://rclone.org) binary (MIT, © Nick Craig-Wood and contributors) — downloaded by the installer from downloads.rclone.org. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for full attribution.

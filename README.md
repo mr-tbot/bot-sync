@@ -24,6 +24,40 @@ under the 📖 **Help** tab and on the welcome modal.
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full install + uninstall guide,
 or jump to the [Changelog](#changelog).
 
+## Features at a glance
+
+- **Self-hosted on commodity hardware.** Runs on a GL-iNet GL-A1300 / any
+  OpenWrt 19.07+ router, a Raspberry Pi, a Linux box, a Mac, or a Windows
+  PC. Same daemon binary, platform-aware installer.
+- **USB-drive-backed.** Almost everything (state, rclone config, OAuth
+  tokens, sync data) lives on a plug-in USB drive — yank it out, plug it
+  into another router, you're back in business.
+- **7 providers.** Google Drive, Dropbox, Box, OneDrive, FTP / FTPS,
+  SFTP (SSH), and plain HTTP folder listings — all powered by
+  [rclone](https://rclone.org).
+- **Downloads + Uploads + Bisync.** Pull cloud → drive (additive copy or
+  full resync), push drive → cloud (push / mirror / bisync), per-entry
+  sync interval (Manual / 1 min … 24 h / Custom seconds) with live
+  countdown next to *Last sync*.
+- **Projects.** Group downloads/uploads into named projects; default
+  account per provider; inline project create from the Add panels.
+- **LAN re-share.** SMB share `\\<router-ip>\BOT-SYNC`, Bonjour/Avahi
+  advertisement, optional NFS export.
+- **Friendly hostname.** `http://bot.sync/` works on every device on the
+  LAN (alias IP + dnsmasq + iptables PREROUTING REDIRECT, no proxy hop).
+- **Web UI.** Vanilla-JS SPA: dashboard, accounts, downloads, uploads,
+  files browser, projects, system/jobs, settings, in-app Help tab.
+- **Reliability.** Watchdog with auto-restart, OOM-kill recovery, master
+  switches (Downloads / Uploads / global), per-drive pause/resume,
+  filesystem-aware Eject dialog, hardware performance presets for
+  low-RAM routers.
+- **Notifications.** Discord, Slack, generic webhook, ntfy, email/SMTP
+  — selectable per event type.
+- **Mock mode.** `BOTSYNC_MOCK=1` runs the entire daemon (UI included)
+  on any host with Python 3.7+, no rclone, no USB drive needed.
+- **Pure-stdlib daemon.** No Python dependencies beyond the standard
+  library; the only third-party runtime piece is the rclone binary.
+
 ## Supported providers
 
 | Provider | Auth | Watch / pull (Download) | Push (Upload) | Notes |
@@ -742,3 +776,11 @@ future version does not require wiping state.
   SMB / Bonjour / NFS sharing, notifications (Discord, Slack, generic
   webhook, ntfy, email), setup wizard, welcome modal, mock mode for
   desktop development.
+
+## License & acknowledgements
+
+BOT-SYNC is released under the [MIT License](LICENSE).
+
+**Massive thanks to the [rclone](https://rclone.org) project** (MIT, Nick Craig-Wood and contributors) � every cloud / FTP / SFTP / HTTP transfer in BOT-SYNC is a thin wrapper around rclone. BOT-SYNC neither modifies nor redistributes rclone source; the installer downloads an unmodified upstream binary from downloads.rclone.org onto your USB drive at install time.
+
+Full third-party attribution (rclone, Python, OpenWrt platform tools, cloud-vendor API terms) is in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). If you fork BOT-SYNC, please keep that file intact.
