@@ -681,6 +681,15 @@
     <input id="entryEditAutoDelete" type="datetime-local">
   </label>
   <p class="hint" style="margin:-4px 0 8px 0">Leave blank to keep forever. When set, this entry (and its local files) is removed automatically after this date/time.</p>
+  <label>Sync priority
+    <select id="entryEditPriority">
+      <option value="auto">Inherit from project (default)</option>
+      <option value="high">🔥 High — runs before normal/low jobs</option>
+      <option value="normal">Normal</option>
+      <option value="low">💤 Low — yields to higher-priority jobs</option>
+    </select>
+  </label>
+  <p class="hint" style="margin:-4px 0 8px 0">When several syncs are queued at once, higher-priority entries jump ahead. "Inherit" uses the project's priority (or Normal if unset).</p>
   <p class="hint" id="entryEditHint"></p>
   <div class="modal-actions">
     <button class="btn-secondary" id="entryEditCancel">Cancel</button>

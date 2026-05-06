@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import heapq
 import datetime
 import glob
 import hashlib
@@ -54,7 +55,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.15"
+VERSION = "0.7.16"
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"
@@ -184,6 +185,21 @@ EVENT_TYPES = [
     "rclone.update_failed",
 ]
 SEVERITIES = ["info", "warn", "error"]
+
+# Per-entry / per-project sync priority. The job worker pops the lowest
+# numeric value first, so "high" runs before "normal" runs before "low".
+# "auto" means the entry should inherit from its primary project (or fall
+# back to "normal" if the project is also "auto" / unset). Names are
+# validated by API patches; numeric values must stay sortable.
+PRIORITY_LEVELS: Dict[str, int] = {
+    "high":   -10,
+    "normal":   0,
+    "low":     10,
+}
+PRIORITY_NAMES_ENTRY = ("auto", "high", "normal", "low")
+PRIORITY_NAMES_PROJECT = ("high", "normal", "low")
+PRIORITY_DEFAULT_NUMERIC = PRIORITY_LEVELS["normal"]
+
 EVENT_SEVERITY = {
     "job.started": "info", "job.completed": "info", "job.failed": "error",
     "job.cancelled": "warn", "job.interrupted": "warn", "job.stuck": "error",
@@ -612,6 +628,10 @@ class Store:
                     entry["project_ids"] = [pid] if pid else []
                 if "auto_delete_at" not in entry:
                     entry["auto_delete_at"] = None
+                # Per-entry priority (v0.7.16). "auto" = inherit from the
+                # primary project; explicit "high"/"normal"/"low" overrides.
+                if entry.get("priority") not in PRIORITY_NAMES_ENTRY:
+                    entry["priority"] = "auto"
         for proj in (self._data.get("projects") or {}).values():
             if isinstance(proj, dict) and "auto_delete_at" not in proj:
                 proj["auto_delete_at"] = None
@@ -619,6 +639,10 @@ class Store:
             if isinstance(proj, dict):
                 proj.setdefault("auto_sync_schedule", "")
                 proj.setdefault("last_auto_sync_at", 0)
+                # Per-project priority (v0.7.16). Provides the inherited
+                # value for entries whose own priority is "auto".
+                if proj.get("priority") not in PRIORITY_NAMES_PROJECT:
+                    proj["priority"] = "normal"
 
     def save(self) -> None:
         with self._lock:
@@ -2043,6 +2067,10 @@ class Job:
         # to decide whether a "completed" event is worth pinging Discord
         # about — once a folder has synced once, we suppress no-op runs.
         self.files_transferred = 0
+        # Resolved numeric priority at submit time. Lower runs sooner;
+        # set by JobManager.submit. Stored on the job purely so the UI
+        # job list can show it next to queued jobs.
+        self.priority: int = 0
         self.started_at: Optional[float] = None
         self.finished_at: Optional[float] = None
         self.error: Optional[str] = None
@@ -2056,6 +2084,7 @@ class Job:
             "label": self.label, "state": self.state, "progress": round(self.progress, 1),
             "bytes_done": self.bytes_done, "bytes_total": self.bytes_total,
             "files_transferred": self.files_transferred,
+            "priority": self.priority,
             "eta_seconds": self.eta_seconds, "transfer_rate": self.transfer_rate,
             "started_at": self.started_at, "finished_at": self.finished_at,
             "error": self.error, "log_tail": list(self.log)[-20:],
@@ -2109,7 +2138,12 @@ class JobManager:
         self._jobs: "collections.OrderedDict[str, Job]" = collections.OrderedDict()
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
-        self._queue: collections.deque = collections.deque()
+        # Heapq of (priority, seq, job, runner). Lower priority value runs
+        # first; ties broken by insertion order via _queue_seq so behaviour
+        # within a tier stays FIFO. Was a deque before per-entry priority
+        # support; the API surface is identical from the worker's POV.
+        self._queue: List[Tuple[int, int, "Job", Callable[["Job"], None]]] = []
+        self._queue_seq = 0
         self._workers_started = False
         self._worker_count = 0
         self._stop = threading.Event()
@@ -2212,9 +2246,16 @@ class JobManager:
         # it's set, the entry has at least one prior good sync.
         return not bool(item.get("last_sync"))
 
-    def submit(self, jtype: str, target_id: str, label: str, runner: Callable[[Job], None]) -> Job:
+    def submit(self, jtype: str, target_id: str, label: str,
+               runner: Callable[[Job], None],
+               priority: int = 0) -> Job:
+        """Queue a new job. Lower *priority* values run sooner; ties are
+        broken by insertion order (FIFO within a tier). The default of
+        0 keeps callers that don't care about priority on the same
+        relative footing as before priority queueing was introduced."""
         jid = secrets.token_hex(6)
         job = Job(jid, jtype, target_id, label)
+        job.priority = int(priority)
         with self._cv:
             self._jobs[jid] = job
             # cap retained job history: drop ALL terminal jobs in insertion
@@ -2227,7 +2268,8 @@ class JobManager:
                     if len(self._jobs) <= 50:
                         break
                     self._jobs.pop(k, None)
-            self._queue.append((job, runner))
+            self._queue_seq += 1
+            heapq.heappush(self._queue, (int(priority), self._queue_seq, job, runner))
             self._cv.notify()
         return job
 
@@ -2275,7 +2317,7 @@ class JobManager:
                     return
                 if not self._queue:
                     continue
-                job, runner = self._queue.popleft()
+                _prio, _seq, job, runner = heapq.heappop(self._queue)
             # Gate execution by global cap first, then per-type concurrency.
             # The job stays in state="queued" while it waits for slots.
             self._global.acquire()
@@ -4294,6 +4336,13 @@ class App:
         name = (body.get("name") or "").strip() if "name" in body else None
         if "name" in body and not name:
             return {"ok": False, "error": "name required"}
+        new_priority: Optional[str] = None
+        if "priority" in body:
+            raw_p = (body.get("priority") or "normal")
+            if raw_p not in PRIORITY_NAMES_PROJECT:
+                return {"ok": False, "error": "priority must be one of: " + ", ".join(PRIORITY_NAMES_PROJECT),
+                        "field": "priority"}
+            new_priority = raw_p
         def _u(d: Dict[str, Any]) -> None:
             p = (d.get("projects") or {}).get(pid)
             if p:
@@ -4306,6 +4355,8 @@ class App:
                     p["auto_sync_schedule"] = ("" if raw in (None, "", "manual", "off", "none") else str(raw))
                     # Reset the timer so the new schedule kicks in promptly.
                     p["last_auto_sync_at"] = 0
+                if new_priority is not None:
+                    p["priority"] = new_priority
         self.store.update(_u)
         return {"ok": True}
 
@@ -4355,6 +4406,41 @@ class App:
             return None
         p = (self.store.get().get("projects") or {}).get(pid)
         return (p or {}).get("slug") or None
+
+    def _effective_priority(self, kind: str, item: Dict[str, Any]) -> int:
+        """Resolve a download/upload entry's effective sync priority to the
+        numeric value used by the JobManager heap. ``kind`` is unused today
+        but kept for future per-direction defaults.
+
+        Resolution order:
+            1. The entry's own ``priority`` field, if it's an explicit
+               level (high/normal/low) rather than "auto".
+            2. The primary project's ``priority`` field.
+            3. Any tagged project's priority — pick the highest of those
+               (lowest numeric value), so a low-priority entry that's
+               also tagged into a high-priority project still gets
+               foregrounded for that mirror.
+            4. Default ("normal").
+        """
+        own = (item or {}).get("priority")
+        if own and own in PRIORITY_LEVELS:
+            return PRIORITY_LEVELS[own]
+        projects = (self.store.get().get("projects") or {})
+        candidates: List[int] = []
+        primary = (item or {}).get("project_id")
+        if primary:
+            p = projects.get(primary)
+            if p and p.get("priority") in PRIORITY_LEVELS:
+                candidates.append(PRIORITY_LEVELS[p["priority"]])
+        for pid in (item or {}).get("project_ids") or []:
+            if pid == primary:
+                continue
+            p = projects.get(pid)
+            if p and p.get("priority") in PRIORITY_LEVELS:
+                candidates.append(PRIORITY_LEVELS[p["priority"]])
+        if candidates:
+            return min(candidates)
+        return PRIORITY_DEFAULT_NUMERIC
 
     def _relocate_local(self, item_id: str, kind: str, old_sub: str, new_sub: str) -> None:
         """Best-effort move of a download/upload's local data folder when the
@@ -4920,6 +5006,16 @@ class App:
                 # local_subpath gets a slug nesting on next add/relocate.
                 promote_primary = cleaned[0]
             new_project_ids = cleaned
+        # Per-entry priority. "auto" inherits from the project; explicit
+        # high/normal/low overrides. Anything else is rejected up front so
+        # we never persist a value the priority resolver doesn't understand.
+        new_priority: Optional[str] = None
+        if "priority" in body:
+            raw_p = (body.get("priority") or "auto")
+            if raw_p not in PRIORITY_NAMES_ENTRY:
+                return {"ok": False, "error": "priority must be one of: " + ", ".join(PRIORITY_NAMES_ENTRY),
+                        "field": "priority"}
+            new_priority = raw_p
         def _u(d: Dict[str, Any]) -> None:
             if did in d["downloads"]:
                 for k, v in body.items():
@@ -4936,6 +5032,8 @@ class App:
                 if "auto_delete_at" in body:
                     d["downloads"][did]["auto_delete_at"] = self._parse_auto_delete(
                         body.get("auto_delete_at"))
+                if new_priority is not None:
+                    d["downloads"][did]["priority"] = new_priority
                 if reset:
                     d["downloads"][did]["last_sync"] = None
         self.store.update(_u)
@@ -4988,8 +5086,10 @@ class App:
             shutil.rmtree(local, ignore_errors=True)
         os.makedirs(local, exist_ok=True)
 
+        prio = self._effective_priority("download", item)
         if IS_MOCK or not item.get("remote"):
-            job = self.jobs.submit("download", did, item["label"], runner_mock_sync("download"))
+            job = self.jobs.submit("download", did, item["label"],
+                                   runner_mock_sync("download"), priority=prio)
         else:
             extra: List[str] = []
             # --drive-root-folder-id is a Google Drive backend flag; pass it
@@ -5008,7 +5108,9 @@ class App:
             else:
                 src = "{}:{}".format(item["remote"], item.get("remote_path", ""))
             args = ["copy", src, local] + extra
-            job = self.jobs.submit("download", did, item["label"], runner_rclone(self.rclone, args, item["label"]))
+            job = self.jobs.submit("download", did, item["label"],
+                                   runner_rclone(self.rclone, args, item["label"]),
+                                   priority=prio)
         return {"ok": True, "job_id": job.id}
 
     # ---- uploads ----
@@ -5165,6 +5267,13 @@ class App:
             elif cleaned and not cur_primary:
                 promote_primary = cleaned[0]
             new_project_ids = cleaned
+        new_priority: Optional[str] = None
+        if "priority" in body:
+            raw_p = (body.get("priority") or "auto")
+            if raw_p not in PRIORITY_NAMES_ENTRY:
+                return {"ok": False, "error": "priority must be one of: " + ", ".join(PRIORITY_NAMES_ENTRY),
+                        "field": "priority"}
+            new_priority = raw_p
         def _u(d: Dict[str, Any]) -> None:
             if uid in d["uploads"]:
                 for k, v in body.items():
@@ -5181,6 +5290,8 @@ class App:
                 if "auto_delete_at" in body:
                     d["uploads"][uid]["auto_delete_at"] = self._parse_auto_delete(
                         body.get("auto_delete_at"))
+                if new_priority is not None:
+                    d["uploads"][uid]["priority"] = new_priority
                 if reset:
                     d["uploads"][uid]["last_sync"] = None
         self.store.update(_u)
@@ -5212,8 +5323,10 @@ class App:
             return {"ok": False, "error": "drive not mounted"}
         local = os.path.join(mp or ROOT, item["local_subpath"])
         os.makedirs(local, exist_ok=True)
+        prio = self._effective_priority("upload", item)
         if IS_MOCK or not item.get("remote"):
-            job = self.jobs.submit("upload", uid, item["label"], runner_mock_sync("upload"))
+            job = self.jobs.submit("upload", uid, item["label"],
+                                   runner_mock_sync("upload"), priority=prio)
         else:
             dest = "{}:{}".format(item["remote"], item.get("remote_path", ""))
             verb = {"push": "copy", "mirror": "sync", "bisync": "bisync"}.get(item.get("mode", "push"), "copy")
@@ -5228,7 +5341,9 @@ class App:
                 # providers (Dropbox/Box/OneDrive included).
                 if not item.get("last_sync"):
                     args += ["--resync"]
-            job = self.jobs.submit("upload", uid, item["label"], runner_rclone(self.rclone, args, item["label"]))
+            job = self.jobs.submit("upload", uid, item["label"],
+                                   runner_rclone(self.rclone, args, item["label"]),
+                                   priority=prio)
         return {"ok": True, "job_id": job.id}
 
     # ---- sharing & system ----

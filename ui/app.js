@@ -1065,6 +1065,10 @@ const openEditEntry = (kind, id, item) => {
     _setExtraChipIds($('#entryEditProjectExtraChips'), extras);
   }
   $('#entryEditAutoDelete').value = _epochToDatetimeLocal(item.auto_delete_at);
+  // Sync priority defaults to "auto" so the entry inherits its project's
+  // priority. Legacy entries without a priority field also fall through
+  // to "auto" so they keep the pre-priority behaviour.
+  $('#entryEditPriority').value = item.priority || 'auto';
   // Build remote dropdown from the live remotes list, preselecting the
   // item's current remote (which may be blank for legacy/mock entries).
   const sel = $('#entryEditRemote'); sel.innerHTML = '';
@@ -1104,6 +1108,7 @@ $('#entryEditSubmit').addEventListener('click', async () => {
     project_id: $('#entryEditProject').value || '',
     project_ids: _projectIdsFromForm('#entryEditProject', '#entryEditProjectExtraChips'),
     auto_delete_at: _datetimeLocalToEpoch($('#entryEditAutoDelete').value),
+    priority: $('#entryEditPriority').value || 'auto',
   };
   if (kind === 'upload') body.mode = $('#entryEditMode').value;
   const path = kind === 'upload' ? `/api/uploads/${id}` : `/api/downloads/${id}`;
@@ -2334,10 +2339,17 @@ const renderProjects = () => {
     if (open) det.open = true;
     det.addEventListener('toggle', () => { _PROJ_OPEN[pid] = det.open; });
 
+    const prio = p.priority || 'normal';
+    const prioPill = prio === 'high'
+      ? el('span', { class: 'pill warn', title: 'High priority' }, '🔥 high')
+      : prio === 'low'
+        ? el('span', { class: 'pill muted', title: 'Low priority' }, '💤 low')
+        : '';
     const summary = el('summary', { style: 'cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap' },
       el('strong', {}, p.name || '(unnamed)'),
       el('span', { class: 'pill muted' }, p.slug || ''),
       el('span', { class: 'pill ' + (members.length ? 'ok' : 'muted') }, `${members.length} entr${members.length === 1 ? 'y' : 'ies'}`),
+      prioPill,
       p.auto_sync_schedule ? el('span', { class: 'pill', title: 'Auto-sync interval' }, `⏱ ${p.auto_sync_schedule}`) : '',
       p.auto_delete_at ? el('span', { class: 'pill', title: 'Auto-delete at' }, `🗑 ${new Date(p.auto_delete_at * 1000).toLocaleString()}`) : '',
     );
@@ -2372,11 +2384,21 @@ const renderProjects = () => {
     const nameIn = el('input', { type: 'text', value: p.name || '' });
     const adIn = el('input', { type: 'datetime-local', value: _epochToDatetimeLocal(p.auto_delete_at || 0) });
     const schedSel = _scheduleSelect(p.auto_sync_schedule);
+    // Project priority drives the inherited value for any tagged entry
+    // whose own priority is "auto" (the default). Keep the option labels
+    // in sync with the entry-edit modal so users learn one vocabulary.
+    const prioSel = el('select', {},
+      el('option', { value: 'high' }, '🔥 High — runs before normal/low'),
+      el('option', { value: 'normal' }, 'Normal'),
+      el('option', { value: 'low' }, '💤 Low — yields to higher-priority'),
+    );
+    prioSel.value = p.priority || 'normal';
     const form = el('div', { class: 'panel', style: 'margin:0' },
-      el('div', { style: 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px' },
+      el('div', { style: 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px' },
         el('label', {}, 'Name', nameIn),
         el('label', {}, 'Auto-delete at', adIn),
         el('label', {}, 'Auto-sync schedule', schedSel),
+        el('label', {}, 'Sync priority', prioSel),
       ),
       el('div', { class: 'row-end', style: 'gap:6px;margin-top:8px;flex-wrap:wrap' },
         el('button', { class: 'btn-primary', on: { click: async () => {
@@ -2384,6 +2406,7 @@ const renderProjects = () => {
             name: nameIn.value.trim(),
             auto_delete_at: _datetimeLocalToEpoch(adIn.value),
             auto_sync_schedule: schedSel.value || '',
+            priority: prioSel.value || 'normal',
           };
           const r = await api(`/api/projects/${pid}`, { method: 'PATCH', body });
           if (r && r.ok !== false) { toast('Project saved'); refreshState(); }
