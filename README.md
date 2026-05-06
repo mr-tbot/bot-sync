@@ -1,9 +1,17 @@
 # 🤖 BOT-SYNC
 
 USB-drive-backed cloud-folder sync appliance for OpenWrt routers (primary
-target: GL-iNet GL-A1300). Watches Google Drive / Dropbox / Box / OneDrive /
-plain HTTP folder links and syncs them to a USB drive plugged into the router,
-then re-shares the drive over SMB + Bonjour (and optionally NFS) to the LAN.
+target: GL-iNet GL-A1300). Watches **Google Drive, Dropbox, Box, OneDrive,
+FTP / FTPS, SFTP, and plain HTTP folder links**, and keeps a USB drive
+plugged into the router in sync with them — then re-shares the drive over
+SMB + Bonjour (and optionally NFS) to the LAN.
+
+FTP, FTPS and SFTP “watch” a remote directory the same way the cloud backends
+do: paste the host + credentials once on the **☁️ Accounts** tab (no OAuth),
+point a Download at a remote path, and bot-sync polls it on the schedule you
+pick (per-entry interval) and pulls anything new onto the drive. Uploads can
+run in the other direction — push, mirror or bisync local content up to any
+of the same backends.
 
 Almost everything lives on the USB drive: the only files dropped onto the
 router's flash are an init script, a UCI config, a hotplug hook, and an
@@ -15,6 +23,23 @@ under the 📖 **Help** tab and on the welcome modal.
 
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full install + uninstall guide,
 or jump to the [Changelog](#changelog).
+
+## Supported providers
+
+| Provider | Auth | Watch / pull (Download) | Push (Upload) | Notes |
+|---|---|---|---|---|
+| **Google Drive** | OAuth (your client_id / client_secret) | ✅ folder URL or folder ID | ✅ push / mirror / bisync | Shared folders work via folder ID. |
+| **Dropbox** | OAuth | ✅ — see *Dropbox shared links* below | ✅ | Shared links must be added to the user's Dropbox first. |
+| **Box** | OAuth (rclone built-in) | ✅ | ✅ | |
+| **OneDrive** | OAuth (rclone built-in) | ✅ | ✅ | Personal + Business + SharePoint via rclone backend. |
+| **FTP / FTPS** | host + user + password (+ TLS mode) | ✅ remote directory polling | ✅ | Plain FTP / explicit FTPS / implicit FTPS. No OAuth. |
+| **SFTP (SSH)** | host + user + password *or* private key | ✅ | ✅ | Optional private key persisted at `<conf-dir>/keys/<name>.pem`. |
+| **HTTP** | none / Basic | ✅ folder index pull | (read-only) | Public/listing-style HTTP servers. |
+
+Every provider supports the same Downloads / Uploads workflow: per-entry
+**sync interval** (Manual / 1 min … 24 h / Custom seconds), live schedule
+countdown next to *Last sync*, default-account-per-provider auto-pick, and
+project tagging.
 
 ## Layout
 

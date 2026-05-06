@@ -2133,10 +2133,16 @@ const renderDocsOnce = () => {
 const DOCS_HTML = `
 <h3>What is BOT-SYNC?</h3>
 <p>BOT-SYNC is a tiny self-hosted appliance that lives on your OpenWrt router
-(primary target: GL-iNet GL-A1300) and keeps a USB drive in sync with cloud
-folders \u2014 Google Drive, Dropbox, Box, OneDrive or any plain HTTP folder.
-The drive is then re-shared back to your LAN over SMB and Bonjour so any
-device on the network can read or write the files transparently.</p>
+(primary target: GL-iNet GL-A1300) and keeps a USB drive in sync with remote
+folders. Supported sources include
+<strong>Google Drive, Dropbox, Box, OneDrive, FTP / FTPS, SFTP (SSH), and
+plain HTTP</strong> folder listings. The drive is then re-shared back to
+your LAN over SMB and Bonjour so any device on the network can read or
+write the files transparently.</p>
+<p>FTP, FTPS and SFTP behave like the cloud backends \u2014 you connect once on
+the <strong>\u2601\ufe0f Accounts</strong> tab with host / user / password (or SSH
+key), then point a Download or Upload at a remote path and pick a sync
+interval. No OAuth required.</p>
 <p>Almost everything (the daemon, the rclone binary, the state file, your
 synced folders) lives on the USB drive. The router's flash only carries an
 init script, a UCI config, a hotplug hook, and an optional firewall include
@@ -2145,11 +2151,26 @@ for the friendly <code>http://bot.sync/</code> hostname.</p>
 <h3>How a sync works</h3>
 <ol>
   <li>You plug in a USB drive. BOT-SYNC <em>adopts</em> it (writes a marker file).</li>
-  <li>You connect a cloud account on the <strong>\u2601\ufe0f Accounts</strong> tab \u2014 this creates an rclone remote via OAuth.</li>
-  <li>You add a <strong>Download</strong> (paste a folder URL) or an <strong>Upload</strong> (pick a local sub-folder).</li>
-  <li>You hit <em>Sync</em>. rclone runs in the background; progress and logs are visible under <strong>\ud83d\udee0\ufe0f System \u2192 Active jobs</strong>.</li>
+  <li>You connect an account on the <strong>\u2601\ufe0f Accounts</strong> tab \u2014 OAuth for Drive / Dropbox / Box / OneDrive, or plain credentials for FTP / FTPS / SFTP / HTTP. Each account becomes an rclone remote.</li>
+  <li>You add a <strong>Download</strong> (paste a folder URL or remote path) or an <strong>Upload</strong> (pick a local sub-folder).</li>
+  <li>You pick a <em>Sync interval</em> (Manual / 1 min \u2026 24 h / Custom seconds). The autosync loop re-fires the entry whenever the interval elapses.</li>
+  <li>You hit <em>Sync</em> (or wait for the schedule). rclone runs in the background; progress and logs are visible under <strong>\ud83d\udee0\ufe0f System \u2192 Active jobs</strong>.</li>
   <li>The synced folders are exposed on the LAN as SMB shares (\\\\&lt;router-ip&gt;\\BOT-SYNC).</li>
 </ol>
+
+<h3>Supported providers</h3>
+<table class="data">
+  <thead><tr><th>Provider</th><th>Auth</th><th>Watch</th><th>Push</th></tr></thead>
+  <tbody>
+    <tr><td>Google Drive</td><td>OAuth (your client_id/secret)</td><td>\u2705</td><td>\u2705</td></tr>
+    <tr><td>Dropbox</td><td>OAuth</td><td>\u2705 (see Dropbox shared links note)</td><td>\u2705</td></tr>
+    <tr><td>Box</td><td>OAuth (rclone built-in)</td><td>\u2705</td><td>\u2705</td></tr>
+    <tr><td>OneDrive</td><td>OAuth (rclone built-in)</td><td>\u2705</td><td>\u2705</td></tr>
+    <tr><td>FTP / FTPS</td><td>host + user + password (+ TLS mode)</td><td>\u2705</td><td>\u2705</td></tr>
+    <tr><td>SFTP (SSH)</td><td>host + user + password <em>or</em> private key</td><td>\u2705</td><td>\u2705</td></tr>
+    <tr><td>HTTP</td><td>none / Basic</td><td>\u2705</td><td>read-only</td></tr>
+  </tbody>
+</table>
 
 <h3>Master switches (Settings)</h3>
 <ul>
@@ -2159,11 +2180,16 @@ for the friendly <code>http://bot.sync/</code> hostname.</p>
 </ul>
 <p class="hint">When a switch is off, the corresponding <em>Sync</em> button returns an error rather than queuing a job. Existing files on the drive and remote are never deleted by toggling these.</p>
 
-<h3>Cloud accounts</h3>
-<p>BOT-SYNC speaks rclone under the hood. Adding an account starts a device
-OAuth flow that you complete in your normal browser \u2014 no need to expose the
-router to the internet. Per-account health is checked periodically (look for
-the green/red dot on the topbar).</p>
+<h3>Accounts</h3>
+<p>BOT-SYNC speaks rclone under the hood. <strong>Cloud accounts</strong>
+(Drive / Dropbox / Box / OneDrive) use a device OAuth flow that you complete
+in your normal browser \u2014 no need to expose the router to the internet.
+<strong>FTP, FTPS and SFTP</strong> are added inline: enter host, port, user,
+password (or upload an SSH private key for SFTP), pick a TLS mode for FTPS,
+and save \u2014 the credentials are written into <code>rclone.conf</code> on the
+USB drive. <strong>HTTP</strong> only needs the URL (and optional Basic auth).
+Per-account health is checked periodically (look for the green/red dot on
+the topbar).</p>
 
 <h3>Downloads vs. Uploads</h3>
 <table class="data">

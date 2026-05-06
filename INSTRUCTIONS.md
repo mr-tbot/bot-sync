@@ -1,9 +1,14 @@
 # 🤖 BOT-SYNC — Install Instructions (v0.7.10)
 
-A USB-drive-backed cloud-sync appliance for OpenWrt routers. Almost everything
-lives on the USB drive itself: the only files this installer drops onto the
-router's flash are an init script, a UCI config, a hotplug hook, and an
-optional firewall include for the friendly hostname redirect.
+A USB-drive-backed cloud-sync appliance for OpenWrt routers. Watches
+**Google Drive, Dropbox, Box, OneDrive, FTP / FTPS, SFTP, and plain HTTP
+folder links** and keeps a USB drive plugged into the router in sync with
+them. FTP / FTPS / SFTP work the same as the cloud backends — plain host +
+credentials on the **☁️ Accounts** tab, no OAuth, then point a Download
+at a remote path. Almost everything lives on the USB drive itself: the
+only files this installer drops onto the router's flash are an init
+script, a UCI config, a hotplug hook, and an optional firewall include
+for the friendly hostname redirect.
 
 > The same content is available inside the web UI under the **📖 Help** tab.
 
