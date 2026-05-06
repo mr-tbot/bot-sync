@@ -55,13 +55,208 @@ optional firewall include for the friendly `http://bot.sync/` hostname.
 
 
 
-**Status:** v0.7.10 — deployed to GL-A1300, running off USB, reachable at
+**Status:** v0.7.11 — deployed to GL-A1300, running off USB, reachable at
 
 
 `http://bot.sync/` (and `http://<router-ip>:8585/`). In-app guide now lives
 
 
 under the 📖 **Help** tab and on the welcome modal.
+
+
+
+
+
+## ⚠️ Heads-up before you start
+
+
+
+
+
+**This is currently well-tested only on the GL-iNet GL-A1300 router** running
+
+
+GL firmware 4.7.x (OpenWrt 21.02 underneath). The Raspberry Pi, generic Linux,
+
+
+macOS and Windows installers exist, are based on widely-available tools
+
+
+(Python 3.9 stdlib + rclone + a per-platform service manager), and *should*
+
+
+work — but they have not been put through anywhere near the same number of
+
+
+production cycles. **Treat the non-router targets as secondary** for now and
+
+
+expect to do some manual fix-ups (firewall rules, service permissions, mount
+
+
+paths) on those platforms. Bug reports and PRs from non-router users are
+
+
+extremely welcome.
+
+
+
+
+
+The original goal was a solution that could **run exclusively on a router** —
+
+
+small power footprint, always-on, plug-in USB drive, no spare PC required —
+
+
+so the router path is the one this project polishes first.
+
+
+
+
+
+### Why this exists
+
+
+
+
+
+I'm a **VJ / Production Specialist / Creative Engineer** who is constantly
+
+
+wrangling content folders for live shows: media drops from artists, project
+
+
+archives, prep stems, lighting cue libraries, NDI/Dante config bundles, the
+
+
+lot. Every show I'm pulling the latest version of someone's "FINAL_v3_real"
+
+
+folder out of a different cloud locker and getting it onto the gear at the
+
+
+venue.
+
+
+
+
+
+BOT-SYNC is my way of automating that. Plug a USB drive into the venue's
+
+
+router, point bot-sync at the producers' Drive / Dropbox / SFTP / FTP / Box /
+
+
+OneDrive folders, and **the router does the legwork**: pulls the latest
+
+
+drops in the background and re-shares them over SMB to every laptop, media
+
+
+server, and lighting console on the LAN. When an artist updates their folder
+
+
+from a hotel room across the country, the venue's local copy catches up on
+
+
+its own. No "is everyone on the same version" Slack thread at 2am.
+
+
+
+
+
+### Skill level and prerequisites
+
+
+
+
+
+This is **an intermediate self-host tutorial**, not a one-click consumer
+
+
+product. To set it up successfully (especially on a router) you should be
+
+
+comfortable with:
+
+
+
+
+
+- **SSH** into a Linux box (key or password) and basic shell navigation
+
+
+  (`cd`, `ls`, `cat`, `tail -f`).
+
+
+- **OpenWrt / UCI basics** if you're targeting a router — at minimum knowing
+
+
+  how to read `/etc/config/*`, run `uci show`, and tail `logread`.
+
+
+- **Mounting a USB drive on Linux/OpenWrt** and finding its mountpoint
+
+
+  (the installer will discover it for you, but if it doesn't appear you'll
+
+
+  need to debug it).
+
+
+- **Python 3.9+** installed on your router or host. You don't need to write
+
+
+  Python; you just need to be able to run `python3 install/install.py` and
+
+
+  read its error messages.
+
+
+- **OAuth or token-based cloud auth.** For Google Drive you'll set up a
+
+
+  Google Cloud OAuth client (one-time, ~10 minutes; the README walks
+
+
+  through it). For Dropbox you'll generate a long-lived app token. FTP /
+
+
+  FTPS / SFTP just need host + credentials.
+
+
+- **Basic networking knowledge** — what an IP / subnet / port is, how to
+
+
+  add a DHCP/DNS entry on your router (for the friendly `bot.sync`
+
+
+  hostname), and how to open a firewall port if you're running on a non-
+
+
+  router OS.
+
+
+- **SMB / file sharing** at the level of "I know how to mount a network
+
+
+  share from Windows / macOS / Linux".
+
+
+
+
+
+If you're comfortable with most of those, you'll be fine. If "SSH" or
+
+
+"mountpoint" sound unfamiliar, you'll probably want to pair this with a
+
+
+tutorial on those fundamentals first — bot-sync is opinionated but it
+
+
+doesn't hide the underlying Linux machinery from you.
 
 
 

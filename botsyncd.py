@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import datetime
 import hashlib
 import hmac
 import json
@@ -50,7 +51,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.10"
+VERSION = "0.7.11"
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"
@@ -580,6 +581,24 @@ class Store:
                 elif isinstance(v, dict) and isinstance(dst.get(k), dict):
                     _deep(dst[k], v)
         _deep(self._data, DEFAULT_STATE)
+        # Backfill multi-project tagging fields on legacy entries. v0.7.11
+        # introduced `project_ids` (list) alongside the existing single
+        # `project_id`. Older state files only have project_id; we mirror
+        # it into project_ids so the rest of the daemon can treat the list
+        # as authoritative without special-casing every read.
+        for bucket in ("downloads", "uploads"):
+            for entry in (self._data.get(bucket) or {}).values():
+                if not isinstance(entry, dict):
+                    continue
+                pid = entry.get("project_id")
+                pids = entry.get("project_ids")
+                if not isinstance(pids, list):
+                    entry["project_ids"] = [pid] if pid else []
+                if "auto_delete_at" not in entry:
+                    entry["auto_delete_at"] = None
+        for proj in (self._data.get("projects") or {}).values():
+            if isinstance(proj, dict) and "auto_delete_at" not in proj:
+                proj["auto_delete_at"] = None
 
     def save(self) -> None:
         with self._lock:
@@ -2060,6 +2079,7 @@ class JobManager:
         self.store = store
         self.rclone = rclone
         self.notifier = notifier
+        self.on_complete: Optional[Callable[["Job"], None]] = None
         self._jobs: "collections.OrderedDict[str, Job]" = collections.OrderedDict()
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
@@ -2281,6 +2301,15 @@ class JobManager:
                         self.store.update(_push_log)
                     except Exception:
                         logger.exception("sync_log append failed for job %s", job.id)
+                # Fire post-completion hook (mirroring to additional project
+                # tags, etc.). Hook is best-effort: failures are logged but
+                # never propagate, so a broken mirror can't take the worker
+                # down.
+                if self.on_complete is not None:
+                    try:
+                        self.on_complete(job)
+                    except Exception:
+                        logger.exception("on_complete hook failed for job %s", job.id)
             finally:
                 if limiter is not None:
                     limiter.release()
@@ -2726,6 +2755,7 @@ class App:
         self.oauth = OAuthHelper(self.store, self.rclone)
         self.notifier = Notifier(self.store)
         self.jobs = JobManager(self.store, self.rclone, notifier=self.notifier)
+        self.jobs.on_complete = self._on_job_complete
         self.jobs.start_workers(
             dl_max=self.store.get()["limits"].get("download_concurrency",
                        self.store.get()["limits"].get("max_concurrent_jobs", 1)),
@@ -3299,6 +3329,10 @@ class App:
                 self._autosync_tick()
             except Exception:
                 logger.exception("autosync tick")
+            try:
+                self._purge_due()
+            except Exception:
+                logger.exception("purge tick")
             if self._stop_event.wait(self._AUTOSYNC_TICK):
                 return
 
@@ -3950,6 +3984,38 @@ class App:
         s = s.strip("._-") or ""
         return s[:80]
 
+    @staticmethod
+    def _parse_auto_delete(value: Any) -> Optional[float]:
+        """Normalise an auto_delete_at field. Accepts:
+          - None / "" / 0 -> None (no auto-delete)
+          - epoch seconds (int / float / numeric string)
+          - ISO-8601 string (best-effort, naive treated as local time)
+        """
+        if value in (None, "", 0, "0"):
+            return None
+        try:
+            if isinstance(value, (int, float)):
+                return float(value) or None
+            s = str(value).strip()
+            if not s:
+                return None
+            # Numeric-string fast path.
+            try:
+                return float(s) or None
+            except ValueError:
+                pass
+            # ISO-8601 fallback: "YYYY-MM-DDTHH:MM" from <input type=datetime-local>.
+            try:
+                dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if dt.tzinfo is None:
+                # datetime-local: assume the user's local clock.
+                return dt.timestamp()
+            return dt.timestamp()
+        except Exception:
+            return None
+
     def api_project_list(self) -> Dict[str, Any]:
         return {"projects": self.store.get().get("projects", {}) or {}}
 
@@ -3970,21 +4036,26 @@ class App:
         def _add(d: Dict[str, Any]) -> None:
             d.setdefault("projects", {})[pid] = {
                 "name": name, "slug": slug, "created_at": time.time(),
+                "auto_delete_at": self._parse_auto_delete(body.get("auto_delete_at")),
             }
         self.store.update(_add)
         return {"ok": True, "id": pid, "slug": slug}
 
     def api_project_patch(self, pid: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        # Only the display name is editable; slug is frozen because changing
-        # it would orphan existing on-disk folders. Users who want a new
-        # slug should create a new project and reassign entries.
-        name = (body.get("name") or "").strip()
-        if not name:
+        # Only the display name and auto-delete timestamp are editable;
+        # slug is frozen because changing it would orphan existing on-disk
+        # folders. Users who want a new slug should create a new project
+        # and reassign entries.
+        name = (body.get("name") or "").strip() if "name" in body else None
+        if "name" in body and not name:
             return {"ok": False, "error": "name required"}
         def _u(d: Dict[str, Any]) -> None:
             p = (d.get("projects") or {}).get(pid)
             if p:
-                p["name"] = name
+                if name is not None:
+                    p["name"] = name
+                if "auto_delete_at" in body:
+                    p["auto_delete_at"] = self._parse_auto_delete(body.get("auto_delete_at"))
         self.store.update(_u)
         return {"ok": True}
 
@@ -3993,8 +4064,10 @@ class App:
         # Refuse to delete a project that still has assigned entries —
         # otherwise their local_subpath would point at a now-meaningless
         # slug and the user has no way to reassign them via the UI.
-        used_dl = [did for did, d in (s.get("downloads") or {}).items() if d.get("project_id") == pid]
-        used_up = [uid for uid, u in (s.get("uploads") or {}).items() if u.get("project_id") == pid]
+        used_dl = [did for did, d in (s.get("downloads") or {}).items()
+                   if d.get("project_id") == pid or pid in (d.get("project_ids") or [])]
+        used_up = [uid for uid, u in (s.get("uploads") or {}).items()
+                   if u.get("project_id") == pid or pid in (u.get("project_ids") or [])]
         if used_dl or used_up:
             return {"ok": False, "error": f"project still has {len(used_dl)} download(s) and {len(used_up)} upload(s) — reassign or delete them first"}
         def _u(d: Dict[str, Any]) -> None:
@@ -4045,6 +4118,237 @@ class App:
             logger.info("%s %s relocated %s -> %s", kind, item_id, old_sub, new_sub)
         except Exception:
             logger.exception("_relocate_local failed for %s/%s", kind, item_id)
+
+    # ---- multi-project mirroring (v0.7.11) ----
+    # A download/upload may carry a list of project_ids. The first entry is
+    # the "primary" — that's the project whose slug appears in
+    # local_subpath, so it's the actual sync target. Any additional
+    # project_ids cause the daemon to mirror the primary's local directory
+    # into each of those project folders after a successful sync, so an
+    # artist's media drop that's relevant to two simultaneous shows ends up
+    # under both per-show folders on the drive without re-downloading from
+    # the cloud twice.
+
+    @staticmethod
+    def _replace_first_segment(local_sub: str, depth: int, new_slug: Optional[str]) -> str:
+        """Rewrite the project-slug component inside local_subpath.
+
+        Download paths are ``downloads/<slug>/<leaf>`` (depth=1) or
+        ``downloads/<leaf>`` (no slug). Upload paths are
+        ``uploads/<provider>/<slug>/<leaf>`` (depth=2) or
+        ``uploads/<provider>/<leaf>`` (no slug). depth = number of fixed
+        prefix segments before the slug.
+        """
+        parts = (local_sub or "").split("/")
+        # Strip empties from leading/trailing slashes.
+        parts = [p for p in parts if p != ""]
+        if len(parts) <= depth:
+            return local_sub
+        prefix = parts[:depth]
+        rest = parts[depth:]
+        # Detect whether a slug is currently present: rest has >= 2 parts
+        # if a slug + leaf, or 1 part if no slug. We don't try to identify
+        # which segment is the slug from disk — instead callers always
+        # construct the *additional* mirror path from the primary by
+        # taking the leaf (last segment) and inserting the new slug.
+        leaf = rest[-1]
+        if new_slug:
+            return "/".join(prefix + [new_slug, leaf])
+        return "/".join(prefix + [leaf])
+
+    def _additional_mirror_subpaths(self, item: Dict[str, Any], kind: str) -> List[Tuple[str, str]]:
+        """Return list of (project_id, local_subpath) for *additional*
+        project tags (i.e. all project_ids after the primary)."""
+        ids = item.get("project_ids") or []
+        primary = item.get("project_id")
+        # Build the set of "extra" pids (preserve order, drop primary +
+        # duplicates + unknowns).
+        seen = set()
+        if primary:
+            seen.add(primary)
+        extras: List[str] = []
+        for pid in ids:
+            if pid and pid != primary and pid not in seen:
+                seen.add(pid)
+                extras.append(pid)
+        if not extras:
+            return []
+        primary_sub = item.get("local_subpath") or ""
+        depth = 1 if kind == "downloads" else 2  # uploads have a provider segment
+        out: List[Tuple[str, str]] = []
+        for pid in extras:
+            slug = self._project_slug_for(pid)
+            if not slug:
+                continue
+            mirror = self._replace_first_segment(primary_sub, depth, slug)
+            if mirror and mirror != primary_sub:
+                out.append((pid, mirror))
+        return out
+
+    def _post_sync_mirror(self, item_id: str, kind: str) -> None:
+        """After a successful sync, copy the primary local directory into
+        each additional project folder. Uses ``shutil.copytree`` with
+        ``dirs_exist_ok=True`` so subsequent syncs incrementally update the
+        mirrors. Failures are logged and swallowed — a broken mirror must
+        never take the worker thread down."""
+        if IS_MOCK:
+            return
+        item = (self.store.get().get(kind) or {}).get(item_id)
+        if not item:
+            return
+        extras = self._additional_mirror_subpaths(item, kind)
+        if not extras:
+            return
+        mp = self._live_mountpoint(item.get("drive_uuid"))
+        if not mp:
+            return
+        primary_sub = (item.get("local_subpath") or "").lstrip("/")
+        src = os.path.join(mp, primary_sub)
+        if not os.path.isdir(src):
+            return
+        for pid, mirror_sub in extras:
+            dst = os.path.join(mp, mirror_sub.lstrip("/"))
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                # copytree(dirs_exist_ok=True) requires Python 3.8+. We
+                # require 3.9 anyway, so this is fine on every supported
+                # platform.
+                shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False)
+                logger.info("mirror %s/%s -> project %s (%s)",
+                            kind, item_id, pid, mirror_sub)
+            except Exception:
+                logger.exception("mirror failed: %s/%s -> %s", kind, item_id, mirror_sub)
+
+    def _on_job_complete(self, job: "Job") -> None:
+        """JobManager hook. Runs after every job finishes (success or
+        failure). Currently only mirrors successful download/upload jobs to
+        any additional project tags — purges are handled separately by the
+        autosync loop on a fixed cadence."""
+        if job.state != "done" or not job.target_id:
+            return
+        kind = "downloads" if job.type == "download" else (
+               "uploads" if job.type == "upload" else None)
+        if not kind:
+            return
+        try:
+            self._post_sync_mirror(job.target_id, kind)
+        except Exception:
+            logger.exception("_post_sync_mirror failed for %s/%s", kind, job.target_id)
+
+    # ---- auto-purge (v0.7.11) ----
+    # Each download / upload / project may carry an ``auto_delete_at``
+    # epoch-seconds timestamp. When that time has passed, the autosync
+    # loop deletes the entry and (for downloads/uploads) wipes the local
+    # data directory. Deleting a project cascades to every download and
+    # upload that has the project anywhere in its project_ids list.
+
+    def _purge_due(self) -> None:
+        now = time.time()
+        s = self.store.get()
+        # Downloads
+        for did, item in list((s.get("downloads") or {}).items()):
+            t = item.get("auto_delete_at")
+            if isinstance(t, (int, float)) and t and t <= now:
+                logger.info("auto-purge download %s (%s) — expired %.0fs ago",
+                            did, item.get("label", ""), now - t)
+                try:
+                    self.api_download_delete(did, delete_files=True)
+                except Exception:
+                    logger.exception("auto-purge download %s failed", did)
+                # Also wipe any additional-project mirrors for this entry
+                # so we don't leave orphan copies behind.
+                try:
+                    self._purge_mirrors(item, "downloads")
+                except Exception:
+                    logger.exception("auto-purge mirrors failed for download %s", did)
+        # Uploads
+        s = self.store.get()
+        for uid_, item in list((s.get("uploads") or {}).items()):
+            t = item.get("auto_delete_at")
+            if isinstance(t, (int, float)) and t and t <= now:
+                logger.info("auto-purge upload %s (%s) — expired %.0fs ago",
+                            uid_, item.get("label", ""), now - t)
+                try:
+                    # Uploads currently don't expose a "delete_files" flag in
+                    # api_upload_delete — wipe the staging dir manually.
+                    self._purge_mirrors(item, "uploads")
+                    mp = self._live_mountpoint(item.get("drive_uuid"))
+                    sub = (item.get("local_subpath") or "").lstrip("/")
+                    if mp and sub and not IS_MOCK:
+                        local = os.path.realpath(os.path.join(mp, sub))
+                        mp_real = os.path.realpath(mp) + os.sep
+                        if local.startswith(mp_real):
+                            shutil.rmtree(local, ignore_errors=True)
+                    self.api_upload_delete(uid_)
+                except Exception:
+                    logger.exception("auto-purge upload %s failed", uid_)
+        # Projects: cascade-delete every download/upload tagged with the
+        # project, then drop the project itself.
+        s = self.store.get()
+        for pid, proj in list((s.get("projects") or {}).items()):
+            if not isinstance(proj, dict):
+                continue
+            t = proj.get("auto_delete_at")
+            if isinstance(t, (int, float)) and t and t <= now:
+                logger.info("auto-purge project %s (%s) — expired %.0fs ago",
+                            pid, proj.get("name", ""), now - t)
+                try:
+                    self._purge_project_cascade(pid)
+                except Exception:
+                    logger.exception("auto-purge project %s failed", pid)
+
+    def _purge_mirrors(self, item: Dict[str, Any], kind: str) -> None:
+        """Wipe the additional-project mirror directories for a
+        download/upload that's about to be deleted."""
+        if IS_MOCK:
+            return
+        mp = self._live_mountpoint(item.get("drive_uuid"))
+        if not mp:
+            return
+        mp_real = os.path.realpath(mp) + os.sep
+        for _pid, mirror_sub in self._additional_mirror_subpaths(item, kind):
+            try:
+                dst = os.path.realpath(os.path.join(mp, mirror_sub.lstrip("/")))
+                if dst.startswith(mp_real):
+                    shutil.rmtree(dst, ignore_errors=True)
+            except Exception:
+                logger.exception("purge mirror failed: %s -> %s", kind, mirror_sub)
+
+    def _purge_project_cascade(self, pid: str) -> None:
+        s = self.store.get()
+        # Wipe any download/upload that tags this project (primary OR
+        # additional). Delete files for downloads, staging dirs for uploads.
+        for did, item in list((s.get("downloads") or {}).items()):
+            tags = set([item.get("project_id")] + (item.get("project_ids") or []))
+            if pid in tags:
+                try:
+                    self._purge_mirrors(item, "downloads")
+                    self.api_download_delete(did, delete_files=True)
+                except Exception:
+                    logger.exception("cascade delete download %s failed", did)
+        s = self.store.get()
+        for uid_, item in list((s.get("uploads") or {}).items()):
+            tags = set([item.get("project_id")] + (item.get("project_ids") or []))
+            if pid in tags:
+                try:
+                    self._purge_mirrors(item, "uploads")
+                    mp = self._live_mountpoint(item.get("drive_uuid"))
+                    sub = (item.get("local_subpath") or "").lstrip("/")
+                    if mp and sub and not IS_MOCK:
+                        local = os.path.realpath(os.path.join(mp, sub))
+                        mp_real = os.path.realpath(mp) + os.sep
+                        if local.startswith(mp_real):
+                            shutil.rmtree(local, ignore_errors=True)
+                    self.api_upload_delete(uid_)
+                except Exception:
+                    logger.exception("cascade delete upload %s failed", uid_)
+        # Finally drop the project record itself.
+        def _u(d: Dict[str, Any]) -> None:
+            (d.get("projects") or {}).pop(pid, None)
+        try:
+            self.store.update(_u)
+        except Exception:
+            logger.exception("project record drop failed: %s", pid)
 
     # ---- downloads ----
 
@@ -4101,7 +4405,36 @@ class App:
         proj_slug = self._project_slug_for(project_id)
         if project_id and not proj_slug:
             return {"ok": False, "error": "unknown project_id"}
+        # Multi-project tagging (v0.7.11). project_ids is a list whose first
+        # entry is the *primary* (== project_id, the one whose slug nests
+        # local_subpath); any extras get mirrored after each successful
+        # sync. We accept either field for forward/back compat.
+        raw_ids = body.get("project_ids")
+        if isinstance(raw_ids, list):
+            extra_ids: List[str] = [str(x).strip() for x in raw_ids if x]
+        else:
+            extra_ids = []
+        # Validate each extra against known projects.
+        for xid in extra_ids:
+            if not self._project_slug_for(xid):
+                return {"ok": False, "error": f"unknown project_id in project_ids: {xid}",
+                        "field": "project_ids"}
+        # If the user supplied project_ids but no project_id, promote the
+        # first to primary so local_subpath gets a slug.
+        if extra_ids and not project_id:
+            project_id = extra_ids[0]
+            proj_slug = self._project_slug_for(project_id)
+        # Canonical ordered list with primary first, no duplicates.
+        merged_ids: List[str] = []
+        if project_id:
+            merged_ids.append(project_id)
+        for xid in extra_ids:
+            if xid not in merged_ids:
+                merged_ids.append(xid)
         sub = ("downloads/" + proj_slug + "/" + local_subpath) if proj_slug else ("downloads/" + local_subpath)
+        # Auto-delete: epoch seconds, optional. UI sends a number; we accept
+        # numeric strings too so curl users can `-d auto_delete_at=1814400000`.
+        auto_delete_at = self._parse_auto_delete(body.get("auto_delete_at"))
 
         def _add(d: Dict[str, Any]) -> None:
             d["downloads"][did] = {
@@ -4113,6 +4446,8 @@ class App:
                 "drive_uuid": drive_uuid,
                 "local_subpath": sub,
                 "project_id": project_id,
+                "project_ids": merged_ids,
+                "auto_delete_at": auto_delete_at,
                 "state": "active",
                 "schedule": body.get("schedule", ""),
                 "last_sync": None, "remote_size": 0, "local_size": 0,
@@ -4168,6 +4503,36 @@ class App:
                 # because the user is moving it between projects.
                 leaf = os.path.basename((old_subpath or "").rstrip("/")) or did
                 new_subpath = ("downloads/" + new_proj_slug + "/" + leaf) if new_proj_slug else ("downloads/" + leaf)
+        # Multi-project tag list update. Validate each id; primary
+        # (project_id, set above) always heads the list.
+        new_project_ids: Optional[List[str]] = None
+        promote_primary: Optional[str] = None
+        if "project_ids" in body:
+            raw_ids = body.get("project_ids") or []
+            if not isinstance(raw_ids, list):
+                return {"ok": False, "error": "project_ids must be a list",
+                        "field": "project_ids"}
+            cleaned: List[str] = []
+            for x in raw_ids:
+                xid = str(x).strip()
+                if not xid:
+                    continue
+                if not self._project_slug_for(xid):
+                    return {"ok": False, "error": f"unknown project_id in project_ids: {xid}",
+                            "field": "project_ids"}
+                if xid not in cleaned:
+                    cleaned.append(xid)
+            # Decide the primary head ahead of the closure so we don't try
+            # to reassign new_project_ids inside _u (which would shadow it).
+            cur_dl = (self.store.get().get("downloads") or {}).get(did) or {}
+            cur_primary = new_project_id if "project_id" in body else cur_dl.get("project_id")
+            if cur_primary and cur_primary in cleaned:
+                cleaned = [cur_primary] + [p for p in cleaned if p != cur_primary]
+            elif cleaned and not cur_primary:
+                # No primary set anywhere — promote the first tag so
+                # local_subpath gets a slug nesting on next add/relocate.
+                promote_primary = cleaned[0]
+            new_project_ids = cleaned
         def _u(d: Dict[str, Any]) -> None:
             if did in d["downloads"]:
                 for k, v in body.items():
@@ -4177,6 +4542,13 @@ class App:
                     d["downloads"][did]["project_id"] = new_project_id
                     if new_subpath is not None:
                         d["downloads"][did]["local_subpath"] = new_subpath
+                elif promote_primary:
+                    d["downloads"][did]["project_id"] = promote_primary
+                if new_project_ids is not None:
+                    d["downloads"][did]["project_ids"] = list(new_project_ids)
+                if "auto_delete_at" in body:
+                    d["downloads"][did]["auto_delete_at"] = self._parse_auto_delete(
+                        body.get("auto_delete_at"))
                 if reset:
                     d["downloads"][did]["last_sync"] = None
         self.store.update(_u)
@@ -4299,8 +4671,28 @@ class App:
         proj_slug = self._project_slug_for(project_id)
         if project_id and not proj_slug:
             return {"ok": False, "error": "unknown project_id"}
+        # Multi-project tagging (v0.7.11). See api_download_add for details.
+        raw_ids = body.get("project_ids")
+        if isinstance(raw_ids, list):
+            extra_ids: List[str] = [str(x).strip() for x in raw_ids if x]
+        else:
+            extra_ids = []
+        for xid in extra_ids:
+            if not self._project_slug_for(xid):
+                return {"ok": False, "error": f"unknown project_id in project_ids: {xid}",
+                        "field": "project_ids"}
+        if extra_ids and not project_id:
+            project_id = extra_ids[0]
+            proj_slug = self._project_slug_for(project_id)
+        merged_ids: List[str] = []
+        if project_id:
+            merged_ids.append(project_id)
+        for xid in extra_ids:
+            if xid not in merged_ids:
+                merged_ids.append(xid)
         local_subpath = ("uploads/{}/{}/{}".format(provider, proj_slug, sub)
                          if proj_slug else "uploads/{}/{}".format(provider, sub))
+        auto_delete_at = self._parse_auto_delete(body.get("auto_delete_at"))
 
         def _add(d: Dict[str, Any]) -> None:
             d["uploads"][uid] = {
@@ -4311,6 +4703,8 @@ class App:
                 "remote_path": remote_path,
                 "mode": body.get("mode", "push"),
                 "project_id": project_id,
+                "project_ids": merged_ids,
+                "auto_delete_at": auto_delete_at,
                 "state": "active", "schedule": body.get("schedule", ""),
                 "last_sync": None, "local_size": 0, "remote_size": 0,
             }
@@ -4359,6 +4753,31 @@ class App:
                 leaf = os.path.basename((old_subpath or "").rstrip("/")) or uid
                 new_subpath = ("uploads/{}/{}/{}".format(provider, new_proj_slug, leaf)
                                if new_proj_slug else "uploads/{}/{}".format(provider, leaf))
+        # Multi-project tag list update for uploads (mirrors download path).
+        new_project_ids: Optional[List[str]] = None
+        promote_primary: Optional[str] = None
+        if "project_ids" in body:
+            raw_ids = body.get("project_ids") or []
+            if not isinstance(raw_ids, list):
+                return {"ok": False, "error": "project_ids must be a list",
+                        "field": "project_ids"}
+            cleaned: List[str] = []
+            for x in raw_ids:
+                xid = str(x).strip()
+                if not xid:
+                    continue
+                if not self._project_slug_for(xid):
+                    return {"ok": False, "error": f"unknown project_id in project_ids: {xid}",
+                            "field": "project_ids"}
+                if xid not in cleaned:
+                    cleaned.append(xid)
+            cur_ul = (self.store.get().get("uploads") or {}).get(uid) or {}
+            cur_primary = new_project_id if "project_id" in body else cur_ul.get("project_id")
+            if cur_primary and cur_primary in cleaned:
+                cleaned = [cur_primary] + [p for p in cleaned if p != cur_primary]
+            elif cleaned and not cur_primary:
+                promote_primary = cleaned[0]
+            new_project_ids = cleaned
         def _u(d: Dict[str, Any]) -> None:
             if uid in d["uploads"]:
                 for k, v in body.items():
@@ -4368,6 +4787,13 @@ class App:
                     d["uploads"][uid]["project_id"] = new_project_id
                     if new_subpath is not None:
                         d["uploads"][uid]["local_subpath"] = new_subpath
+                elif promote_primary:
+                    d["uploads"][uid]["project_id"] = promote_primary
+                if new_project_ids is not None:
+                    d["uploads"][uid]["project_ids"] = list(new_project_ids)
+                if "auto_delete_at" in body:
+                    d["uploads"][uid]["auto_delete_at"] = self._parse_auto_delete(
+                        body.get("auto_delete_at"))
                 if reset:
                     d["uploads"][uid]["last_sync"] = None
         self.store.update(_u)
@@ -5321,6 +5747,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(a.api_project_delete(m.group(1)))
 
         # ---- downloads ----
+        if path == "/api/downloads" and method == "GET":
             return self._send_json(a.api_download_list())
         if path == "/api/downloads" and method == "POST":
             return self._send_json(a.api_download_add(body))

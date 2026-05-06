@@ -617,7 +617,6 @@ const renderDownloads = () => {
   items.forEach(([id, d]) => {
     const drive = drivesById[d.drive_uuid];
     const job = jobByTarget[id];
-    const proj = d.project_id ? (projects[d.project_id] || null) : null;
     const stateCell = job
       ? el('td', { 'data-job-target': id },
           el('div', { class: 'bar', 'data-role': 'bar' },
@@ -627,7 +626,7 @@ const renderDownloads = () => {
     const tr = el('tr', {},
       el('td', {}, el('input', { type: 'checkbox', value: id, class: 'dl-sel' })),
       el('td', {}, d.label, d.warning ? el('div', { class: 'hint', style: 'color:var(--warn)' }, '⚠ ' + d.warning) : null),
-      el('td', {}, proj ? proj.name : (d.project_id ? '(missing)' : '—')),
+      _renderProjectTagsCell(d),
       el('td', {}, d.provider || '—'),
       el('td', {}, d.remote || '—'),
       el('td', {}, drive ? drive.label : (d.drive_uuid || '—')),
@@ -842,6 +841,8 @@ $('#dlAddSubmit').addEventListener('click', async () => {
     drive_uuid: $('#dlDrive').value,
     remote_path: $('#dlRemotePath').value.trim(),
     project_id: $('#dlProject').value,
+    project_ids: _projectIdsFromForm('#dlProject', '#dlProjectExtraChips'),
+    auto_delete_at: _datetimeLocalToEpoch($('#dlAutoDelete').value),
     schedule: _readScheduleForm($('#dlSchedulePreset'), $('#dlScheduleCustom')),
   };
   if (!body.url) {
@@ -852,6 +853,8 @@ $('#dlAddSubmit').addEventListener('click', async () => {
   const r = await api('/api/downloads', { method: 'POST', body });
   if (r.ok) {
     $('#dlUrl').value = ''; $('#dlLabel').value = ''; $('#dlRemotePath').value = '';
+    $('#dlAutoDelete').value = '';
+    _setExtraChipIds($('#dlProjectExtraChips'), []);
     $('#downloadAddPanel').classList.add('hidden');
     if (r.warning) toast('Folder added — ' + r.warning, true);
     else if (r.queued) toast('Folder added — sync will start automatically (' + (r.queued_reason || 'queued') + ')');
@@ -871,6 +874,8 @@ const populateDownloadAddForm = () => {
   const driveSel = $('#dlDrive'); driveSel.innerHTML = '';
   (STATE.drives_live || []).filter(d => d.adopted).forEach(d => driveSel.append(el('option', { value: d.uuid }, d.label + (d.primary ? ' (primary)' : ''))));
   populateProjectSelect($('#dlProject'));
+  _populateExtraSelect($('#dlProjectExtra'));
+  _setExtraChipIds($('#dlProjectExtraChips'), []);
 };
 $('#dlBulkSync').addEventListener('click', async () => {
   for (const [id, d] of Object.entries(STATE.downloads || {})) {
@@ -905,11 +910,10 @@ const renderUploads = () => {
   }
   items.forEach(([id, u]) => {
     const drive = drivesById[u.drive_uuid];
-    const proj = u.project_id ? (projects[u.project_id] || null) : null;
     const tr = el('tr', {},
       el('td', {}, el('input', { type: 'checkbox', value: id, class: 'up-sel' })),
       el('td', {}, u.label),
-      el('td', {}, proj ? proj.name : (u.project_id ? '(missing)' : '—')),
+      _renderProjectTagsCell(u),
       el('td', {}, u.provider),
       el('td', {}, u.remote || '—'),
       el('td', {}, (drive ? drive.label + ':' : '') + u.local_subpath),
@@ -940,6 +944,8 @@ $('#upAddOpen').addEventListener('click', () => {
   const ds = $('#upDrive'); ds.innerHTML = '';
   (STATE.drives_live || []).filter(d => d.adopted).forEach(d => ds.append(el('option', { value: d.uuid }, d.label)));
   populateProjectSelect($('#upProject'));
+  _populateExtraSelect($('#upProjectExtra'));
+  _setExtraChipIds($('#upProjectExtraChips'), []);
   $('#uploadAddPanel').classList.remove('hidden');
   _clearFieldErrors($('#uploadAddPanel'));
   _renderProviderHelp($('#upProviderHelp'), $('#upProvider').value, 'upload');
@@ -976,11 +982,15 @@ $('#upAddSubmit').addEventListener('click', async () => {
     mode: $('#upMode').value,
     drive_uuid: $('#upDrive').value,
     project_id: $('#upProject').value,
+    project_ids: _projectIdsFromForm('#upProject', '#upProjectExtraChips'),
+    auto_delete_at: _datetimeLocalToEpoch($('#upAutoDelete').value),
     schedule: _readScheduleForm($('#upSchedulePreset'), $('#upScheduleCustom')),
   };
   const r = await api('/api/uploads', { method: 'POST', body });
   if (r.ok) {
     $('#upLabel').value = ''; $('#upLocalName').value = ''; $('#upRemotePath').value = '';
+    $('#upAutoDelete').value = '';
+    _setExtraChipIds($('#upProjectExtraChips'), []);
     $('#uploadAddPanel').classList.add('hidden');
     if (r.queued) toast('Upload folder added — sync will start automatically (' + (r.queued_reason || 'queued') + ')');
     else toast('Upload folder added — sync started');
@@ -1039,6 +1049,17 @@ const openEditEntry = (kind, id, item) => {
   // so the user can re-shuffle entries between projects from the edit
   // dialog without losing already-synced data.
   populateProjectSelect($('#entryEditProject'), item.project_id || '');
+  _populateExtraSelect($('#entryEditProjectExtra'));
+  // Chips = project_ids minus the primary (which is already shown in the
+  // primary <select>). Fall back to [] when the entry only has the legacy
+  // single project_id.
+  {
+    const ids = (item.project_ids && item.project_ids.length) ? item.project_ids.slice() : (item.project_id ? [item.project_id] : []);
+    const primary = item.project_id || (ids[0] || '');
+    const extras = ids.filter(x => x && x !== primary);
+    _setExtraChipIds($('#entryEditProjectExtraChips'), extras);
+  }
+  $('#entryEditAutoDelete').value = _epochToDatetimeLocal(item.auto_delete_at);
   // Build remote dropdown from the live remotes list, preselecting the
   // item's current remote (which may be blank for legacy/mock entries).
   const sel = $('#entryEditRemote'); sel.innerHTML = '';
@@ -1076,6 +1097,8 @@ $('#entryEditSubmit').addEventListener('click', async () => {
     remote_path: $('#entryEditRemotePath').value.trim(),
     schedule: _readScheduleForm($('#entryEditSchedulePreset'), $('#entryEditScheduleCustom')),
     project_id: $('#entryEditProject').value || '',
+    project_ids: _projectIdsFromForm('#entryEditProject', '#entryEditProjectExtraChips'),
+    auto_delete_at: _datetimeLocalToEpoch($('#entryEditAutoDelete').value),
   };
   if (kind === 'upload') body.mode = $('#entryEditMode').value;
   const path = kind === 'upload' ? `/api/uploads/${id}` : `/api/downloads/${id}`;
@@ -2021,6 +2044,111 @@ const populateProjectSelect = (sel, currentId) => {
   });
 };
 
+// ----- Multi-project tagging widget -----
+// Each form (download add / upload add / entry edit) has a primary <select>
+// plus a secondary <select> + "Tag" button + chip area. The chips area data
+// store is the source of truth for the *additional* project ids (the primary
+// is read separately at submit). At submit we POST/PATCH project_ids =
+// [primary, ...chips] (deduped, primary head); the daemon mirrors the synced
+// folder into each additional project's folder after each successful sync.
+const _populateExtraSelect = (sel) => {
+  if (!sel) return;
+  sel.innerHTML = '';
+  sel.append(el('option', { value: '' }, '— pick a project to tag —'));
+  Object.entries(STATE.projects || {}).forEach(([pid, p]) => {
+    sel.append(el('option', { value: pid }, `${p.name} (${p.slug})`));
+  });
+};
+const _renderTagChips = (chipsEl, ids) => {
+  if (!chipsEl) return;
+  chipsEl.innerHTML = '';
+  const projects = STATE.projects || {};
+  (ids || []).forEach((pid) => {
+    const p = projects[pid];
+    const chip = el('span', { class: 'pill', style: 'margin-right:6px;cursor:default;display:inline-flex;align-items:center;gap:4px' },
+      p ? `${p.name}` : '(missing)',
+      el('button', {
+        type: 'button',
+        class: 'btn-link',
+        title: 'Remove tag',
+        style: 'padding:0 4px;line-height:1',
+        on: { click: () => {
+          const cur = (chipsEl.dataset.ids || '').split(',').filter(Boolean);
+          const next = cur.filter(x => x !== pid);
+          chipsEl.dataset.ids = next.join(',');
+          _renderTagChips(chipsEl, next);
+        } },
+      }, '✕'),
+    );
+    chipsEl.append(chip);
+  });
+};
+const _setExtraChipIds = (chipsEl, ids) => {
+  if (!chipsEl) return;
+  const dedup = Array.from(new Set((ids || []).filter(Boolean)));
+  chipsEl.dataset.ids = dedup.join(',');
+  _renderTagChips(chipsEl, dedup);
+};
+const _getExtraChipIds = (chipsEl) => {
+  if (!chipsEl) return [];
+  return (chipsEl.dataset.ids || '').split(',').filter(Boolean);
+};
+const _wireExtraTagAdd = (btnId, extraSelId, primarySelId, chipsId) => {
+  const btn = $(btnId);
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const sel = $(extraSelId);
+    const primary = $(primarySelId);
+    const chipsEl = $(chipsId);
+    if (!sel || !chipsEl) return;
+    const pid = sel.value;
+    if (!pid) return toast('Pick a project to tag first', true);
+    if (primary && primary.value === pid) return toast('That project is already the primary', true);
+    const cur = _getExtraChipIds(chipsEl);
+    if (cur.includes(pid)) return toast('Already tagged with that project', true);
+    _setExtraChipIds(chipsEl, [...cur, pid]);
+    sel.value = '';
+  });
+};
+// Combine primary + chips into the project_ids array we send to the daemon.
+const _projectIdsFromForm = (primarySelId, chipsId) => {
+  const primary = $(primarySelId);
+  const chipsEl = $(chipsId);
+  const extras = _getExtraChipIds(chipsEl);
+  if (!primary || !primary.value) return extras;
+  return Array.from(new Set([primary.value, ...extras]));
+};
+// datetime-local <-> epoch seconds. Empty input => null (no auto-delete).
+const _datetimeLocalToEpoch = (val) => {
+  if (!val) return null;
+  // <input type="datetime-local"> emits "YYYY-MM-DDTHH:MM" in *local* time.
+  const t = Date.parse(val);
+  if (isNaN(t)) return null;
+  return Math.floor(t / 1000);
+};
+const _epochToDatetimeLocal = (epoch) => {
+  if (!epoch) return '';
+  const d = new Date(epoch * 1000);
+  if (isNaN(d.getTime())) return '';
+  // Build YYYY-MM-DDTHH:MM in local time without tz suffix.
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const _renderProjectTagsCell = (item) => {
+  const projects = STATE.projects || {};
+  const ids = (item && item.project_ids && item.project_ids.length)
+    ? item.project_ids
+    : (item && item.project_id ? [item.project_id] : []);
+  if (!ids.length) return el('td', {}, '—');
+  const td = el('td', {});
+  ids.forEach((pid, i) => {
+    const p = projects[pid];
+    const chip = el('span', { class: 'pill ' + (i === 0 ? 'ok' : 'muted'), style: 'margin-right:4px', title: i === 0 ? 'Primary project' : 'Mirror tag' }, p ? p.name : '(missing)');
+    td.append(chip);
+  });
+  return td;
+};
+
 // Projects no longer have their own tab — creation happens inline from the
 // Downloads / Uploads add panels and from the entry edit dialog. The select
 // next to each "+ New project" button is repopulated by populateProjectSelect
@@ -2046,6 +2174,9 @@ const _wireInlineNewProject = (btnId, selId) => {
 _wireInlineNewProject('#dlProjectNew', '#dlProject');
 _wireInlineNewProject('#upProjectNew', '#upProject');
 _wireInlineNewProject('#entryEditProjectNew', '#entryEditProject');
+_wireExtraTagAdd('#dlProjectExtraAdd', '#dlProjectExtra', '#dlProject', '#dlProjectExtraChips');
+_wireExtraTagAdd('#upProjectExtraAdd', '#upProjectExtra', '#upProject', '#upProjectExtraChips');
+_wireExtraTagAdd('#entryEditProjectExtraAdd', '#entryEditProjectExtra', '#entryEditProject', '#entryEditProjectExtraChips');
 
 const renderAll = () => {
   if (!STATE) return;

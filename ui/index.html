@@ -135,6 +135,16 @@
         <button type="button" class="btn-secondary" id="dlProjectNew" title="Create a new project and group this download under it">➕ New project</button>
       </div>
       <p class="hint" style="margin:-4px 0 8px 0">Projects nest the per-folder data under <code>&lt;drive&gt;/downloads/&lt;project-slug&gt;/&lt;label&gt;/</code> on disk so multiple shows / clients / events stay tidy.</p>
+      <div class="project-row">
+        <label style="flex:1">Additional projects (mirror copy) <select id="dlProjectExtra"></select></label>
+        <button type="button" class="btn-secondary" id="dlProjectExtraAdd" title="Tag this download with another project — files mirror into that project's folder after each sync">➕ Tag</button>
+      </div>
+      <div id="dlProjectExtraChips" class="tag-chips" style="margin:-4px 0 6px 0"></div>
+      <p class="hint" style="margin:-4px 0 8px 0">Tag this download with multiple projects when an artist or asset belongs to several shows. Each extra tag receives a mirrored copy of the files after every successful sync.</p>
+      <label>Auto-delete on (optional)
+        <input id="dlAutoDelete" type="datetime-local">
+      </label>
+      <p class="hint" style="margin:-4px 0 8px 0">Leave blank to keep forever. When set, this download and its local files (including all mirrors) are deleted automatically after this date/time.</p>
       <label>Remote path (advanced)
         <input id="dlRemotePath" type="text" placeholder="leave blank — auto-detected from URL. Only used when no folder link is supplied.">
       </label>
@@ -223,6 +233,15 @@
         <button type="button" class="btn-secondary" id="upProjectNew" title="Create a new project and group this upload under it">➕ New project</button>
       </div>
       <p class="hint" style="margin:-4px 0 8px 0">Projects nest the per-folder data under <code>&lt;drive&gt;/uploads/&lt;project-slug&gt;/&lt;label&gt;/</code> on disk so multiple shows / clients / events stay tidy.</p>
+      <div class="project-row">
+        <label style="flex:1">Additional projects (mirror copy) <select id="upProjectExtra"></select></label>
+        <button type="button" class="btn-secondary" id="upProjectExtraAdd" title="Tag this upload with another project — staging folder mirrors into that project after each sync">➕ Tag</button>
+      </div>
+      <div id="upProjectExtraChips" class="tag-chips" style="margin:-4px 0 6px 0"></div>
+      <label>Auto-delete on (optional)
+        <input id="upAutoDelete" type="datetime-local">
+      </label>
+      <p class="hint" style="margin:-4px 0 8px 0">Leave blank to keep forever. When set, this upload and its local staging folder are removed automatically after this date/time.</p>
       <div class="sched-row">
         <label style="flex:1">Sync interval
           <select id="upSchedulePreset" data-sched-preset>
@@ -619,6 +638,15 @@
     <label style="flex:1">Project (optional) <select id="entryEditProject"></select></label>
     <button type="button" class="btn-secondary" id="entryEditProjectNew" title="Create a new project and move this entry into it">➕ New project</button>
   </div>
+  <div class="project-row">
+    <label style="flex:1">Additional projects (mirror copy) <select id="entryEditProjectExtra"></select></label>
+    <button type="button" class="btn-secondary" id="entryEditProjectExtraAdd" title="Tag this entry with another project — files mirror into that project's folder after each sync">➕ Tag</button>
+  </div>
+  <div id="entryEditProjectExtraChips" class="tag-chips" style="margin:-4px 0 6px 0"></div>
+  <label>Auto-delete on (optional)
+    <input id="entryEditAutoDelete" type="datetime-local">
+  </label>
+  <p class="hint" style="margin:-4px 0 8px 0">Leave blank to keep forever. When set, this entry (and its local files) is removed automatically after this date/time.</p>
   <p class="hint" id="entryEditHint"></p>
   <div class="modal-actions">
     <button class="btn-secondary" id="entryEditCancel">Cancel</button>

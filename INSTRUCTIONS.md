@@ -1,4 +1,4 @@
-# 🤖 BOT-SYNC — Install Instructions (v0.7.10)
+# 🤖 BOT-SYNC — Install Instructions (v0.7.11)
 
 
 
@@ -31,6 +31,106 @@ BOT-SYNC also runs on a regular **Raspberry Pi / Linux box / macOS / Windows
 PC** via the unified `install/install.py` dispatcher — see
 
 [Non-OpenWrt platforms](#non-openwrt-platforms) at the bottom of this file.
+
+
+
+---
+
+
+
+## ⚠️ Heads-up before you start
+
+
+
+**Tested target.** This release is well-tested *only* on the GL-iNet
+
+GL-A1300 running GL firmware 4.7.x (OpenWrt 21.02 underneath). The Pi /
+
+Linux / macOS / Windows installers are built on top of cross-platform
+
+tooling (Python 3.9 stdlib + rclone + the platform's native service
+
+manager) and should work — but they're **secondary targets** for now and
+
+have not seen anywhere near the same production usage. Expect to debug
+
+a couple of platform-specific quirks (firewall rules, service
+
+permissions, mount paths) on those targets.
+
+
+
+**Why router-first?** This project was built by a VJ / Production
+
+Specialist / Creative Engineer who lives out of cloud folders during
+
+shows — pulling the latest cuts of an artist's project, lighting cue
+
+bundles, NDI/Dante configs, etc. The original design goal was a solution
+
+that runs *exclusively* on a router: low power, always-on, plug-in USB
+
+drive, no spare PC at the venue. The router is what gets polished first.
+
+
+
+**Skill level — this is an intermediate tutorial.** To get bot-sync
+
+running you should be comfortable with:
+
+
+
+- **SSH** into a Linux box and basic shell navigation (`cd`, `ls`,
+
+  `tail -f`).
+
+- **OpenWrt / UCI** at the level of reading `/etc/config/*`, running
+
+  `uci show`, and tailing `logread`.
+
+- **Mounting a USB drive on Linux / OpenWrt** and finding its
+
+  mountpoint (the installer auto-detects, but you'll need to debug if
+
+  it doesn't appear).
+
+- **Python 3.9+** — you don't need to write any Python, but you do
+
+  need to be able to run `python3 install/install.py` and read its
+
+  error messages.
+
+- **OAuth / token-based cloud auth.** Google Drive needs a one-time
+
+  Google Cloud OAuth client (walked through later in this file).
+
+  Dropbox needs an app token. FTP / FTPS / SFTP just need host +
+
+  credentials.
+
+- **Basic networking** — IP / subnet / port concepts, adding a
+
+  DHCP/DNS entry on your router (for the `bot.sync` hostname), opening
+
+  a firewall port on non-router OSes.
+
+- **SMB / file sharing** at the "I know how to mount a network share"
+
+  level.
+
+
+
+If most of that sounds familiar you'll be fine. If "SSH" or
+
+"mountpoint" sound unfamiliar, pair this guide with a beginner Linux/
+
+OpenWrt tutorial first — bot-sync is opinionated but doesn't hide the
+
+underlying machinery.
+
+
+
+---
 
 
 
