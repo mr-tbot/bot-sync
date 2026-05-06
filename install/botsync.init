@@ -1,0 +1,89 @@
+#!/bin/sh /etc/rc.common
+# OpenWrt procd init script for botsyncd.
+# Reads /etc/config/botsync for master enable + port; honours regardless
+# of show-mode/normal-mode (no gl_modeswitch dependency).
+
+USE_PROCD=1
+START=95
+STOP=10
+
+NAME=botsync
+# Search both /mnt/sync (preferred) and gl-iNet's auto-mount /tmp/mountd.
+SYNC_DIRS="/mnt/sync /tmp/mountd"
+
+find_botsync_root() {
+    for base in $SYNC_DIRS; do
+        [ -d "$base" ] || continue
+        for d in "$base"/*; do
+            [ -d "$d" ] || continue
+            [ -f "$d/.botsync_marker" ] || continue
+            if grep -q '"primary": *true' "$d/.botsync_marker" 2>/dev/null; then
+                echo "$d"; return 0
+            fi
+            echo "$d"; return 0
+        done
+    done
+    return 1
+}
+
+start_service() {
+    config_load botsync 2>/dev/null
+    local enabled port bind discord_url admin_user admin_pass
+    config_get_bool enabled     main enabled         1
+    config_get      port        main port            8585
+    config_get      bind        main bind            0.0.0.0
+    config_get      discord_url main discord_webhook ""
+    config_get      admin_user  main user            "admin"
+    config_get      admin_pass  main password        ""
+
+    if [ "$enabled" -ne 1 ]; then
+        logger -t "$NAME" "master switch off (uci botsync.main.enabled=0); not starting"
+        return 0
+    fi
+
+    ROOT="$(find_botsync_root)" || {
+        logger -t "$NAME" "no adopted USB drive found under /mnt/sync or /tmp/mountd; not starting"
+        return 1
+    }
+    DAEMON="$ROOT/bin/botsyncd.py"
+    [ -f "$DAEMON" ] || {
+        logger -t "$NAME" "botsyncd.py not found at $DAEMON"
+        return 1
+    }
+
+    procd_open_instance
+    procd_set_param command /usr/bin/python3 "$DAEMON"
+    procd_set_param env \
+        BOTSYNC_ROOT="$ROOT" \
+        BOTSYNC_BIND="$bind" \
+        BOTSYNC_PORT="$port" \
+        BOTSYNC_USER="$admin_user" \
+        BOTSYNC_PASS="$admin_pass" \
+        BOTSYNC_DISCORD_WEBHOOK="$discord_url"
+    # OOM protection: bias the kernel OOM killer AWAY from the daemon so
+    # that under memory pressure rclone (which the daemon spawns with a
+    # *positive* oom_score_adj) is killed first, not the API server. Without
+    # this, OOM events would kill botsyncd, take the UI offline, and leave
+    # the user with a "router locked up" symptom even though the kernel was
+    # actually still alive. Range is [-1000, 1000]; -500 is a strong but
+    # not absolute bias (init/dropbear at -1000 still outrank us).
+    procd_set_param oom_adj -500
+    # Aggressive respawn: if the daemon crashes within 60s, retry immediately;
+    # never give up (final 0 = unlimited retries). procd will restart it across
+    # signals, OOM, or unhandled exceptions in main().
+    procd_set_param respawn 60 5 0
+    procd_set_param term_timeout 15
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param pidfile /var/run/botsync.pid
+    procd_close_instance
+}
+
+service_triggers() {
+    procd_add_reload_trigger "botsync"
+}
+
+reload_service() {
+    stop
+    start
+}

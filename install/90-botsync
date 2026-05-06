@@ -1,0 +1,63 @@
+#!/bin/sh
+# /etc/hotplug.d/block/90-botsync
+# Auto-mount USB partitions under /mnt/sync/<uuid>/ and (re)start the daemon
+# when an adopted drive comes online.
+
+[ "$ACTION" = "add" ] || [ "$ACTION" = "remove" ] || exit 0
+
+case "$DEVTYPE" in
+    partition) ;;
+    *) exit 0 ;;
+esac
+
+DEV="/dev/$DEVNAME"
+
+# Skip non-USB.
+PARENT_DEV="$(echo "$DEVPATH" | grep -oE 'usb[0-9]+')"
+[ -n "$PARENT_DEV" ] || exit 0
+
+case "$ACTION" in
+add)
+    UUID="$(blkid -s UUID -o value "$DEV" 2>/dev/null)"
+    [ -n "$UUID" ] || UUID="$DEVNAME"
+    MP="/mnt/sync/$UUID"
+
+    if ! mountpoint -q "$MP"; then
+        mkdir -p "$MP"
+        # Try mounting; let the kernel pick the right filesystem driver via -t auto.
+        FS="$(blkid -s TYPE -o value "$DEV" 2>/dev/null)"
+        case "$FS" in
+            exfat|vfat|ntfs|ntfs3|ext4|ext3|ext2)
+                mount -t "$FS" -o noatime,uid=0,gid=0,umask=000 "$DEV" "$MP" 2>/dev/null \
+                    || mount "$DEV" "$MP"
+                ;;
+            *)
+                mount "$DEV" "$MP" 2>/dev/null || true
+                ;;
+        esac
+    fi
+
+    if [ -f "$MP/.botsync_marker" ]; then
+        logger -t botsync "adopted drive $UUID mounted at $MP; (re)starting daemon"
+        /etc/init.d/botsync restart
+    else
+        logger -t botsync "unadopted drive $UUID mounted at $MP (use the UI to adopt)"
+    fi
+    ;;
+
+remove)
+    # Find any /mnt/sync/* that points at this device and clean up.
+    for MP in /mnt/sync/*; do
+        [ -d "$MP" ] || continue
+        if mountpoint -q "$MP" && grep -q " $MP " /proc/mounts 2>/dev/null; then
+            SRC="$(awk -v m="$MP" '$2 == m { print $1 }' /proc/mounts)"
+            if [ "$SRC" = "$DEV" ]; then
+                logger -t botsync "drive $DEV removed; unmounting $MP"
+                umount -l "$MP" 2>/dev/null
+                rmdir "$MP" 2>/dev/null
+                /etc/init.d/botsync restart 2>/dev/null
+            fi
+        fi
+    done
+    ;;
+esac

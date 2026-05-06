@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🤖 BOT-SYNC</title>
+<link rel="stylesheet" href="/ui/style.css?v=__BOTSYNC_VERSION__">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">🤖</span> BOT-SYNC <span id="mockBadge" class="badge hidden">MOCK</span></div>
+  <nav class="tabs">
+    <button data-tab="dashboard" class="tab active">🏠 Dashboard</button>
+    <button data-tab="setup" class="tab">🧭 Setup</button>
+    <button data-tab="drives" class="tab">💾 Drives</button>
+    <button data-tab="files" class="tab">📁 Files</button>
+    <button data-tab="downloads" class="tab">⬇️ Downloads</button>
+    <button data-tab="uploads" class="tab">⬆️ Uploads</button>
+    <button data-tab="remotes" class="tab">☁️ Accounts</button>
+    <button data-tab="sharing" class="tab">📡 Sharing</button>
+    <button data-tab="notifications" class="tab">🔔 Notifications</button>
+    <button data-tab="settings" class="tab">⚙️ Settings</button>
+    <button data-tab="system" class="tab">🛠️ System</button>
+    <button data-tab="help" class="tab">📖 Help</button>
+  </nav>
+  <div class="status" id="systemStatus"></div>
+  <button class="btn-link" id="logoutBtn" title="Sign out">🚪 Sign out</button>
+</header>
+
+<main>
+  <div id="alertBanners"></div>
+  <div id="masterBanner" class="master-toggle hidden">
+    <div style="flex:1">
+      <div class="label">BOT-SYNC is <span id="masterStateLabel">disabled</span></div>
+      <div class="desc">Master switch is off. Sync jobs and notifications are paused.</div>
+    </div>
+    <label class="switch"><input type="checkbox" id="masterSwitch"><span class="slider"></span></label>
+  </div>
+
+  <section id="tab-dashboard" class="tabpane active">
+    <div class="row-between">
+      <h2>🏠 Dashboard</h2>
+      <div>
+        <button class="btn-secondary" id="dashSyncAll" title="Run every active download and upload now">🔄 Sync everything</button>
+        <button class="btn-secondary" id="dashRefresh">↻ Refresh</button>
+      </div>
+    </div>
+    <div id="dashGrid" class="dash-grid"></div>
+  </section>
+
+  <section id="tab-setup" class="tabpane">
+    <h2>🧭 Setup wizard</h2>
+    <p class="hint">Walk through the steps below to get BOT-SYNC ready. You can come back here any time.</p>
+    <div class="wizard" id="setupSteps"></div>
+  </section>
+
+  <section id="tab-drives" class="tabpane">
+    <div class="row-between">
+      <h2>💾 USB drives</h2>
+      <button class="btn-secondary" id="refreshDrives">🔄 Refresh</button>
+    </div>
+    <div class="alert-banner info" style="margin:8px 0">
+      <div class="ab-body">
+        <div class="ab-title">📌 Recommended hardware layout</div>
+        <div class="ab-desc">
+          For long-term reliability use a <strong>small flash drive as the primary drive</strong> (it holds BOT-SYNC's
+          install + state and stays plugged in 24/7) and connect a <strong>powered USB hub</strong> for any larger
+          download/upload drives. The router's USB port can't safely power a spinning HDD or a high-draw SSD on its own,
+          and pulling the primary drive while the router is on can corrupt the on-disk state. Always
+          <strong>power the router down before removing the primary drive</strong>.
+        </div>
+      </div>
+    </div>
+    <div id="drivesList" class="cards"></div>
+  </section>
+
+  <section id="tab-files" class="tabpane">
+    <div class="row-between">
+      <h2>📁 Files</h2>
+      <div>
+        <label class="inline-limit">Drive
+          <select id="fxDrive" title="Pick the USB drive to browse"></select>
+        </label>
+        <button class="btn-secondary" id="fxRefresh" title="Reload current folder">↻</button>
+        <button class="btn-secondary" id="fxEject" title="Eject this drive (flushes pending writes, then unmounts)">⏏ Eject</button>
+      </div>
+    </div>
+    <div class="panel" style="padding:8px 14px">
+      <div id="fxBreadcrumbs" class="fx-crumbs"></div>
+      <div id="fxToolbar" class="row-end" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+        <button class="btn-secondary" id="fxUp" title="Up one folder">↑ Up</button>
+        <button class="btn-secondary" id="fxMkdir" title="Create folder">📂 New folder</button>
+        <label class="btn-secondary" style="cursor:pointer" title="Upload one or more files into the current folder">
+          ⬆️ Upload
+          <input id="fxUploadInput" type="file" multiple style="display:none">
+        </label>
+        <span class="hint" id="fxFreeHint" style="margin-left:auto"></span>
+      </div>
+    </div>
+    <table class="data" id="fxTable">
+      <thead><tr><th style="width:24px"></th><th>Name</th><th style="width:110px">Size</th><th style="width:160px">Modified</th><th style="width:230px"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="hint">Operations are restricted to adopted USB drives. The <code>.botsync_marker</code> file is protected because removing it un-adopts the drive.</p>
+  </section>
+
+  <section id="tab-downloads" class="tabpane">
+    <div class="row-between">
+      <h2>⬇️ Downloads</h2>
+      <div>
+        <label class="inline-limit">Concurrent
+          <select id="dlConcurrency" title="How many download folders may run at the same time">
+            <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+            <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+            <option value="7">7</option><option value="8">8</option>
+          </select>
+        </label>
+        <span class="ram-hint" title="Each concurrent rclone transfer uses roughly 20–40 MB RAM. The router has limited memory — raise this slowly.">ℹ️ ~20–40 MB RAM per concurrent transfer</span>
+        <button class="btn-secondary" id="dlSyncSelected">✅ Sync selected</button>
+        <button class="btn-secondary" id="dlBulkSync">🔄 Sync all active</button>
+        <button class="btn-primary" id="dlAddOpen">➕ Add folder link</button>
+      </div>
+    </div>
+    <div id="downloadAddPanel" class="panel hidden">
+      <h3>Add a folder link</h3>
+      <div id="dlProviderHelp" class="provider-help hint" style="display:none;margin:6px 0 10px 0;padding:8px 10px;background:var(--panel2);border-left:3px solid var(--accent);border-radius:4px"></div>
+      <label>URL <input id="dlUrl" type="url" placeholder="https://drive.google.com/drive/folders/..."></label>
+      <div class="field-error hidden" data-for="url"></div>
+      <label>Label (optional) <input id="dlLabel" type="text" placeholder="auto from URL"></label>
+      <label>Account (rclone remote) <select id="dlRemote"></select></label>
+      <div class="field-error hidden" data-for="remote"></div>
+      <label>Drive <select id="dlDrive"></select></label>
+      <div class="project-row">
+        <label style="flex:1">Project (optional) <select id="dlProject"></select></label>
+        <button type="button" class="btn-secondary" id="dlProjectNew" title="Create a new project and group this download under it">➕ New project</button>
+      </div>
+      <p class="hint" style="margin:-4px 0 8px 0">Projects nest the per-folder data under <code>&lt;drive&gt;/downloads/&lt;project-slug&gt;/&lt;label&gt;/</code> on disk so multiple shows / clients / events stay tidy.</p>
+      <label>Remote path (advanced)
+        <input id="dlRemotePath" type="text" placeholder="leave blank — auto-detected from URL. Only used when no folder link is supplied.">
+      </label>
+      <div class="field-error hidden" data-for="remote_path"></div>
+      <div class="sched-row">
+        <label style="flex:1">Sync interval
+          <select id="dlSchedulePreset" data-sched-preset>
+            <option value="0">Manual only</option>
+            <option value="60">Every 1 minute</option>
+            <option value="300" selected>Every 5 minutes</option>
+            <option value="900">Every 15 minutes</option>
+            <option value="1800">Every 30 minutes</option>
+            <option value="3600">Every hour</option>
+            <option value="21600">Every 6 hours</option>
+            <option value="86400">Every 24 hours</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+        <label class="sched-custom hidden" data-sched-custom-wrap>Seconds
+          <input id="dlScheduleCustom" type="number" min="10" step="1" placeholder="e.g. 120" data-sched-custom>
+        </label>
+      </div>
+      <p class="hint" style="margin:-4px 0 8px 0">After the first successful copy, the daemon will re-run the sync at this interval. Failed syncs back off automatically.</p>
+      <div class="row-end">
+        <button class="btn-secondary" id="dlAddCancel">Cancel</button>
+        <button class="btn-primary" id="dlAddSubmit">Add</button>
+      </div>
+    </div>
+    <table class="data" id="dlTable">
+      <thead><tr>
+        <th><input type="checkbox" id="dlSelAll" title="Select all"></th><th>Label</th><th>Project</th><th>Provider</th><th>Account</th><th>Drive</th>
+        <th>Remote size</th><th>Local size</th><th>State</th><th>Last sync</th><th>Schedule</th><th></th>
+      </tr></thead><tbody></tbody>
+    </table>
+    <section class="panel sync-log-panel" id="dlSyncLogPanel">
+      <div class="row-between">
+        <h3>📜 Recent download activity</h3>
+        <button class="btn-link" id="dlSyncLogClear" title="Clear download history">Clear</button>
+      </div>
+      <table class="data sync-log-table" id="dlSyncLogTable">
+        <thead><tr>
+          <th>When</th><th>Label</th><th>Status</th><th>Duration</th><th>Transferred</th><th>Detail</th>
+        </tr></thead><tbody></tbody>
+      </table>
+    </section>
+  </section>
+
+  <section id="tab-uploads" class="tabpane">
+    <div class="row-between">
+      <h2>⬆️ Uploads</h2>
+      <div>
+        <label class="inline-limit">Concurrent
+          <select id="upConcurrency" title="How many upload folders may run at the same time">
+            <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+            <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+            <option value="7">7</option><option value="8">8</option>
+          </select>
+        </label>
+        <span class="ram-hint" title="Each concurrent rclone transfer uses roughly 20–40 MB RAM. The router has limited memory — raise this slowly.">ℹ️ ~20–40 MB RAM per concurrent transfer</span>
+        <button class="btn-secondary" id="upSyncSelected">✅ Sync selected</button>
+        <button class="btn-secondary" id="upBulkSync">🔄 Sync all active</button>
+        <button class="btn-primary" id="upAddOpen">➕ Add upload folder</button>
+      </div>
+    </div>
+    <div id="uploadAddPanel" class="panel hidden">
+      <h3>Add an upload folder</h3>
+      <div id="upProviderHelp" class="provider-help hint" style="display:none;margin:6px 0 10px 0;padding:8px 10px;background:var(--panel2);border-left:3px solid var(--accent);border-radius:4px"></div>
+      <label>Label <input id="upLabel" type="text" placeholder="My recordings"></label>
+      <label>Provider <select id="upProvider"></select></label>
+      <div class="field-error hidden" data-for="provider"></div>
+      <label>Account (rclone remote) <select id="upRemote"></select></label>
+      <div class="field-error hidden" data-for="remote"></div>
+      <label>Local sub-folder name <input id="upLocalName" type="text" placeholder="Recordings"></label>
+      <label>Remote path <input id="upRemotePath" type="text" placeholder="ShowUploads/Recordings"></label>
+      <div class="field-error hidden" data-for="remote_path"></div>
+      <label>Mode
+        <select id="upMode">
+          <option value="push">Push (one-way, safe)</option>
+          <option value="mirror">Mirror (deletes remote files removed locally)</option>
+          <option value="bisync">Bisync (two-way)</option>
+        </select>
+      </label>
+      <label>Drive <select id="upDrive"></select></label>
+      <div class="project-row">
+        <label style="flex:1">Project (optional) <select id="upProject"></select></label>
+        <button type="button" class="btn-secondary" id="upProjectNew" title="Create a new project and group this upload under it">➕ New project</button>
+      </div>
+      <p class="hint" style="margin:-4px 0 8px 0">Projects nest the per-folder data under <code>&lt;drive&gt;/uploads/&lt;project-slug&gt;/&lt;label&gt;/</code> on disk so multiple shows / clients / events stay tidy.</p>
+      <div class="sched-row">
+        <label style="flex:1">Sync interval
+          <select id="upSchedulePreset" data-sched-preset>
+            <option value="0">Manual only</option>
+            <option value="60">Every 1 minute</option>
+            <option value="300" selected>Every 5 minutes</option>
+            <option value="900">Every 15 minutes</option>
+            <option value="1800">Every 30 minutes</option>
+            <option value="3600">Every hour</option>
+            <option value="21600">Every 6 hours</option>
+            <option value="86400">Every 24 hours</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+        <label class="sched-custom hidden" data-sched-custom-wrap>Seconds
+          <input id="upScheduleCustom" type="number" min="10" step="1" placeholder="e.g. 120" data-sched-custom>
+        </label>
+      </div>
+      <p class="hint" style="margin:-4px 0 8px 0">After the first successful upload, the daemon will re-run the sync at this interval. Failed syncs back off automatically.</p>
+      <div class="row-end">
+        <button class="btn-secondary" id="upAddCancel">Cancel</button>
+        <button class="btn-primary" id="upAddSubmit">Add</button>
+      </div>
+    </div>
+    <table class="data" id="upTable">
+      <thead><tr>
+        <th><input type="checkbox" id="upSelAll" title="Select all"></th><th>Label</th><th>Project</th><th>Provider</th><th>Account</th><th>Local</th><th>Remote path</th>
+        <th>Mode</th><th>State</th><th>Last sync</th><th>Schedule</th><th></th>
+      </tr></thead><tbody></tbody>
+    </table>
+    <section class="panel sync-log-panel" id="upSyncLogPanel">
+      <div class="row-between">
+        <h3>📜 Recent upload activity</h3>
+        <button class="btn-link" id="upSyncLogClear" title="Clear upload history">Clear</button>
+      </div>
+      <table class="data sync-log-table" id="upSyncLogTable">
+        <thead><tr>
+          <th>When</th><th>Label</th><th>Status</th><th>Duration</th><th>Transferred</th><th>Detail</th>
+        </tr></thead><tbody></tbody>
+      </table>
+    </section>
+  </section>
+
+  <section id="tab-remotes" class="tabpane">
+    <div class="row-between">
+      <h2>☁️ Accounts (rclone remotes)</h2>
+      <button class="btn-primary" id="rmAddOpen">➕ Connect account</button>
+    </div>
+    <div id="remoteAddPanel" class="panel hidden">
+      <h3>Connect a cloud account</h3>
+      <label>Provider <select id="rmProvider"></select></label>
+      <label>Name (used internally) <input id="rmName" placeholder="gdrive"></label>
+      <div id="rmProviderHelp" class="provider-help hint" style="display:none;margin:6px 0 10px 0;padding:8px 10px;background:var(--panel2);border-left:3px solid var(--accent);border-radius:4px"></div>
+
+      <!-- Google Drive: optional client_id / client_secret for first-time
+           setup. Reauth re-uses what's already in rclone.conf, so the
+           fields stay hidden when reauthenticating an existing remote. -->
+      <div id="rmGoogleCreds" class="hidden">
+        <p class="hint" style="margin:8px 0 4px 0">
+          <strong>Google OAuth credentials</strong> — needed once per Google
+          account. Create an OAuth 2.0 Client ID of type
+          <em>Desktop</em> (or <em>TVs and Limited Input Devices</em>) in
+          <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer noopener">Google Cloud Console</a>
+          → APIs &amp; Services → Credentials. See README for the full walk-through.
+        </p>
+        <label>Google client_id <input id="rmGCid" placeholder="123-abc.apps.googleusercontent.com"></label>
+        <label>Google client_secret <input id="rmGCSec" type="password" placeholder="GOCSPX-..."></label>
+      </div>
+
+      <!-- FTP / SFTP: plain credentials, no OAuth. Shown only when provider
+           is ftp or sftp. Submitted via POST /api/remotes/basic. -->
+      <div id="rmBasicCreds" class="hidden">
+        <label>Host <input id="rmBcHost" placeholder="ftp.example.com or 192.0.2.10"></label>
+        <div class="field-error hidden" data-for="host"></div>
+        <label>Port (optional) <input id="rmBcPort" type="number" placeholder="21 for FTP, 22 for SFTP"></label>
+        <div class="field-error hidden" data-for="port"></div>
+        <label>Username <input id="rmBcUser" placeholder="anonymous if public FTP"></label>
+        <div class="field-error hidden" data-for="user"></div>
+        <label>Password <input id="rmBcPass" type="password" placeholder="leave blank for anonymous / SFTP key"></label>
+        <div class="field-error hidden" data-for="pass"></div>
+        <div id="rmFtpExtra" class="hidden">
+          <label>TLS mode
+            <select id="rmBcTls">
+              <option value="">Plain FTP (credentials sent in clear)</option>
+              <option value="explicit">Explicit FTPS (AUTH TLS)</option>
+              <option value="implicit">Implicit FTPS (port 990)</option>
+            </select>
+          </label>
+          <label class="checkbox"><input type="checkbox" id="rmBcNoEpsv"> Disable EPSV (try if PASV stalls behind NAT)</label>
+        </div>
+        <div id="rmSftpExtra" class="hidden">
+          <label>Private key (PEM, optional)
+            <textarea id="rmBcKeyPem" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----"></textarea>
+          </label>
+          <div class="field-error hidden" data-for="key_pem"></div>
+          <label>Key passphrase (if any) <input id="rmBcKeyPass" type="password"></label>
+        </div>
+      </div>
+
+      <div class="row-end">
+        <button class="btn-secondary" id="rmAddCancel">Cancel</button>
+        <button class="btn-primary" id="rmAddBasic" title="Save FTP/SFTP credentials">💾 Save FTP/SFTP account</button>
+        <button class="btn-primary" id="rmAddDevice" title="Sign in with your browser — works for Google Drive">🌐 Sign in with browser</button>
+        <button class="btn-secondary" id="rmAddStart" title="Use rclone on a laptop and paste the token (works for any provider)">Use rclone token</button>
+      </div>
+
+      <!-- Device-flow panel (in-browser sign-in for Google Drive) -->
+      <div id="rmDevice" class="hidden">
+        <p><strong>Sign in with your browser</strong> — click the link below on
+          any device that has a browser (your phone is fine), sign in to your
+          Google account, and grant access. This page will detect when it's
+          done.</p>
+        <p style="margin:6px 0">
+          <a id="rmDeviceLink" class="btn-primary" target="_blank" rel="noreferrer noopener" style="text-decoration:none">Open Google sign-in →</a>
+        </p>
+        <p class="hint" id="rmDeviceCodeHint" style="margin:0 0 6px 0">
+          If the page asks for a code, enter:
+          <code id="rmDeviceCode" style="font-size:18px;letter-spacing:2px;background:var(--panel2);padding:2px 8px;border-radius:4px;user-select:all"></code>
+        </p>
+        <p class="hint" id="rmDeviceStatus" style="margin:0">Waiting for you to finish on Google…</p>
+      </div>
+
+      <!-- Headless / paste-token panel (rclone-on-laptop) -->
+      <div id="rmOAuth" class="hidden">
+        <p><strong>Headless OAuth</strong> — the router has no browser, so do this on your laptop or desktop:</p>
+        <ol class="hint" style="margin:6px 0 10px 18px">
+          <li>Install <code>rclone</code> if needed (<a id="rmAuthUrl" target="_blank" rel="noreferrer noopener">rclone.org/downloads</a>).</li>
+          <li>Open a terminal and run the command shown below.</li>
+          <li>A browser tab opens — sign in to your cloud account.</li>
+          <li>rclone prints a JSON blob (<code>{"access_token":"...","token_type":"Bearer",...}</code>). Copy the entire JSON and paste it into the box below.</li>
+        </ol>
+        <pre id="rmAuthCmd" style="background:var(--panel2);padding:8px 10px;border-radius:6px;user-select:all;cursor:text">rclone authorize "drive"</pre>
+        <textarea id="rmToken" rows="5" placeholder='{"access_token":"...","token_type":"Bearer", ...}'></textarea>
+        <div class="row-end">
+          <button class="btn-secondary" id="rmCopyCmd">Copy command</button>
+          <button class="btn-primary" id="rmAddFinish">Finish</button>
+        </div>
+        <p class="hint" id="rmHint"></p>
+      </div>
+    </div>
+    <table class="data" id="rmTable">
+      <thead><tr><th></th><th>Name</th><th>Provider</th><th>Health</th><th>Last check</th><th>Error</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="tab-sharing" class="tabpane">
+    <h2>📡 Sharing</h2>
+    <div class="panel">
+      <label class="checkbox"><input type="checkbox" id="shSmb"> Samba (SMB) — Windows / macOS / Linux / iOS</label>
+      <label class="checkbox"><input type="checkbox" id="shBonjour"> Bonjour / mDNS — auto-discover from Mac Finder & iOS Files</label>
+      <label class="checkbox"><input type="checkbox" id="shNfs"> NFS (advanced, optional)</label>
+      <label class="checkbox"><input type="checkbox" id="shGuestRO"> Guest read-only access</label>
+      <label>Share user <input id="shUser" type="text"></label>
+      <label>Share password <input id="shPass" type="password"></label>
+      <div class="row-end">
+        <button class="btn-primary" id="shSave">Apply</button>
+      </div>
+      <p class="hint">Connect from a Mac with <code>smb://&lt;router-ip&gt;/botsync</code>, or from Windows Explorer with <code>\\&lt;router-ip&gt;\botsync</code>.</p>
+    </div>
+  </section>
+
+  <section id="tab-notifications" class="tabpane">
+    <div class="row-between">
+      <h2>🔔 Notifications</h2>
+      <button class="btn-primary" id="ntAddOpen">➕ Add channel</button>
+    </div>
+    <div id="notifyAddPanel" class="panel hidden">
+      <h3 id="ntFormTitle">Add channel</h3>
+      <input type="hidden" id="ntId">
+      <label>Kind <select id="ntKind"></select></label>
+      <label>Label <input type="text" id="ntLabel" placeholder="My Discord"></label>
+      <div id="ntFields"></div>
+      <label>Minimum severity
+        <select id="ntMinSeverity">
+          <option value="info">info — everything</option>
+          <option value="warn">warn and above</option>
+          <option value="error">errors only</option>
+        </select>
+      </label>
+      <fieldset class="event-grid">
+        <legend>Events</legend>
+        <label class="checkbox"><input type="checkbox" id="ntEventsAll" checked> All events</label>
+        <div id="ntEventList"></div>
+      </fieldset>
+      <label class="checkbox"><input type="checkbox" id="ntEnabled" checked> Enabled</label>
+      <div class="row-end">
+        <button class="btn-secondary" id="ntCancel">Cancel</button>
+        <button class="btn-secondary" id="ntTest">Send test</button>
+        <button class="btn-primary" id="ntSave">Save</button>
+      </div>
+      <p class="hint" id="ntHint"></p>
+    </div>
+    <table class="data" id="ntTable">
+      <thead><tr><th></th><th>Label</th><th>Kind</th><th>Min sev</th><th>Events</th><th>Last send</th><th>Last error</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h3>Recent events</h3>
+    <div id="eventLog" class="panel"></div>
+  </section>
+
+  <section id="tab-settings" class="tabpane">
+    <h2>⚙️ Settings</h2>
+
+    <div class="panel">
+      <h3>Master switch</h3>
+      <p class="hint">Turn BOT-SYNC off everywhere without uninstalling. When off, no sync jobs (uploads or downloads) will run and notifications stop firing.</p>
+      <label class="checkbox"><input type="checkbox" id="settingsEnabled"> BOT-SYNC enabled (master)</label>
+      <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+      <p class="hint">Fine-grained switches — keep BOT-SYNC running but pause one direction.</p>
+      <label class="checkbox"><input type="checkbox" id="settingsDownloadsEnabled"> ⬇️ Downloads enabled (cloud → drive)</label><br>
+      <label class="checkbox"><input type="checkbox" id="settingsUploadsEnabled"> ⬆️ Uploads enabled (drive → cloud)</label>
+    </div>
+
+    <div class="panel">
+      <h3>Web UI session</h3>
+      <p class="hint">How long a sign-in stays valid while idle. New sessions use this value; existing sessions extend on each request. Min 1 hour, max 720 hours (30 days).</p>
+      <label>Session timeout (hours)
+        <input type="number" id="settingsSessionTtl" min="1" max="720" step="1" style="max-width:120px">
+      </label>
+    </div>
+
+    <div class="panel">
+      <h3>Reliability &amp; watchdog</h3>
+      <p class="hint">BOT-SYNC self-recovers from crashes, killed processes and network hangs. <code>procd</code> respawns the daemon automatically; an external cron watchdog pings the daemon every minute and restarts it after 3 consecutive ping failures.</p>
+      <div id="reliabilityStatus" class="reliability-grid"></div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+      <label>Stuck-job timeout (hours)
+        <input type="number" id="settingsStuckJob" min="0" max="168" step="1" style="max-width:120px">
+      </label>
+      <p class="hint">If a sync job runs longer than this without finishing, BOT-SYNC cancels it and fires a <code>job.stuck</code> notification. Set to <strong>0</strong> to disable the timer (not recommended).</p>
+    </div>
+
+    <div class="panel">
+      <h3>⚡ Performance &amp; hardware preset</h3>
+      <p class="hint">
+        Pick the profile that matches the device BOT-SYNC is running on. Each
+        preset caps the number of simultaneous rclone children, the per-child
+        memory ceiling, and the rclone <code>--transfers</code> /
+        <code>--checkers</code> / buffer sizes. The default is auto-detected
+        from total RAM on first start. The router profile is required if you
+        are running on a 256-512&nbsp;MB OpenWrt device — the desktop defaults
+        will OOM the kernel.
+      </p>
+      <div id="perfDetected" class="hint" style="margin:6px 0 12px"></div>
+      <div id="perfPresets" class="perf-presets"></div>
+
+      <details id="perfCustomWrap" style="margin-top:14px">
+        <summary>Custom overrides</summary>
+        <p class="hint">
+          Only used when the preset above is set to <strong>Custom</strong>.
+          Leave a field at 0 to inherit the router floor for that knob. Each
+          rclone child enforces these via flags + <code>RLIMIT_AS</code>.
+        </p>
+        <div class="perf-grid">
+          <label>Max global jobs
+            <input type="number" id="perfMaxGlobal" min="1" max="16" step="1">
+          </label>
+          <label>Transfers (per rclone)
+            <input type="number" id="perfTransfers" min="1" max="32" step="1">
+          </label>
+          <label>Checkers (per rclone)
+            <input type="number" id="perfCheckers" min="1" max="32" step="1">
+          </label>
+          <label>Buffer size (MB)
+            <input type="number" id="perfBuffer" min="0" max="256" step="1">
+          </label>
+          <label>Multi-thread streams
+            <input type="number" id="perfMts" min="0" max="16" step="1">
+          </label>
+          <label>Max backlog (entries)
+            <input type="number" id="perfBacklog" min="100" max="100000" step="100">
+          </label>
+          <label>Low-level retries
+            <input type="number" id="perfRetries" min="1" max="20" step="1">
+          </label>
+          <label>rclone child RAM cap (MB)
+            <input type="number" id="perfMem" min="48" max="8192" step="16">
+          </label>
+          <label>Bandwidth limit (kbps, 0 = none)
+            <input type="number" id="perfBw" min="0" max="1000000" step="100">
+          </label>
+          <label>Process niceness
+            <input type="number" id="perfNice" min="0" max="19" step="1">
+          </label>
+        </div>
+        <div class="row-end" style="margin-top:8px">
+          <button class="btn-primary" id="perfSaveCustom">Save custom overrides</button>
+        </div>
+      </details>
+
+      <p class="hint" id="perfActive" style="margin-top:10px"></p>
+      <p class="hint" id="perfMsg"></p>
+    </div>
+
+    <div class="panel">
+      <h3>Cloud services</h3>
+      <p class="hint">Choose which providers can be added under <em>Accounts</em>. Disabled services are hidden from the wizard and dropdowns.</p>
+      <div id="providerToggles"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Change credentials</h3>
+      <label>Username (admin) <input type="text" id="pwUser"></label>
+      <label>Current password <input type="password" id="pwOld"></label>
+      <label>New password (min 6 chars) <input type="password" id="pwNew"></label>
+      <label>Confirm new password <input type="password" id="pwNew2"></label>
+      <div class="row-end">
+        <button class="btn-primary" id="pwSave">Update credentials</button>
+      </div>
+      <p class="hint" id="pwMsg"></p>
+    </div>
+  </section>
+
+  <section id="tab-system" class="tabpane">
+    <h2>🛠️ System</h2>
+    <div class="panel" id="systemPanel"></div>
+    <h3>📦 rclone</h3>
+    <div class="panel" id="rclonePanel"></div>
+    <h3>⚡ Active jobs</h3>
+    <div id="jobsList"></div>
+    <h3>📜 Recent log</h3>
+    <pre id="logsPane"></pre>
+  </section>
+
+  <section id="tab-help" class="tabpane">
+    <div class="row-between">
+      <h2>📖 BOT-SYNC — User guide</h2>
+      <span class="hint" id="helpVersion"></span>
+    </div>
+    <div class="panel docs" id="docsPanel"></div>
+  </section>
+</main>
+
+<footer class="app-footer">
+  <span id="footerVersion">BOT-SYNC v__BOTSYNC_VERSION__</span>
+  &nbsp;—&nbsp;
+  <span id="footerStats" class="footer-stats" title="Live router stats: free RAM / total, free disk / total, 1-min load, active jobs">—</span>
+  &nbsp;—&nbsp;
+  Made with <span class="heart">♥</span> by <a href="https://MR-TBOT.COM" target="_blank" rel="noreferrer noopener">MR-TBOT.COM</a>
+</footer>
+
+<dialog id="welcomeDialog" class="welcome">
+  <h2>👋 Welcome to BOT-SYNC 🤖</h2>
+  <p>Looks like this is your first time. Let's walk through a quick setup wizard to get your USB drive, cloud accounts, and notifications wired up.</p>
+  <p class="hint">You can dismiss this and find the wizard later under the <strong>🧭 Setup</strong> tab. The full user guide lives in <strong>📖 Help</strong>.</p>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="welcomeDocs">📖 Read the docs</button>
+    <button class="btn-secondary" id="welcomeDismiss">Skip for now</button>
+    <button class="btn-primary" id="welcomeStart">Start setup →</button>
+  </div>
+</dialog>
+
+<!-- Shared edit dialog for both Download and Upload entries. The form is
+     populated by openEditEntry() in app.js, which also chooses which fields
+     are visible (Mode is upload-only). State is toggled via the row's
+     Pause/Resume button so it's intentionally not shown here. -->
+<dialog id="entryEditDialog" class="welcome">
+  <h2 id="entryEditTitle">Edit entry</h2>
+  <input type="hidden" id="entryEditKind">
+  <input type="hidden" id="entryEditId">
+  <div id="entryEditProviderHelp" class="provider-help hint" style="display:none;margin:6px 0 10px 0;padding:8px 10px;background:var(--panel2);border-left:3px solid var(--accent);border-radius:4px"></div>
+  <label>Label <input id="entryEditLabel" type="text"></label>
+  <label>Account (rclone remote) <select id="entryEditRemote"></select></label>
+  <div class="field-error hidden" data-for="remote"></div>
+  <label>Remote path <input id="entryEditRemotePath" type="text" placeholder="e.g. ShowUploads/Recordings"></label>
+  <div class="field-error hidden" data-for="remote_path"></div>
+  <label id="entryEditModeWrap">Mode
+    <select id="entryEditMode">
+      <option value="push">Push (one-way, safe)</option>
+      <option value="mirror">Mirror (deletes remote files removed locally)</option>
+      <option value="bisync">Bisync (two-way)</option>
+    </select>
+  </label>
+  <label>Schedule
+    <select id="entryEditSchedulePreset" data-sched-preset>
+      <option value="0">Manual only</option>
+      <option value="60">Every 1 minute</option>
+      <option value="300">Every 5 minutes</option>
+      <option value="900">Every 15 minutes</option>
+      <option value="1800">Every 30 minutes</option>
+      <option value="3600">Every hour</option>
+      <option value="21600">Every 6 hours</option>
+      <option value="86400">Every 24 hours</option>
+      <option value="custom">Custom…</option>
+    </select>
+  </label>
+  <label class="sched-custom hidden" data-sched-custom-wrap>Custom interval (seconds)
+    <input id="entryEditScheduleCustom" type="number" min="10" step="1" placeholder="e.g. 120" data-sched-custom>
+  </label>
+  <div class="project-row">
+    <label style="flex:1">Project (optional) <select id="entryEditProject"></select></label>
+    <button type="button" class="btn-secondary" id="entryEditProjectNew" title="Create a new project and move this entry into it">➕ New project</button>
+  </div>
+  <p class="hint" id="entryEditHint"></p>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="entryEditCancel">Cancel</button>
+    <button class="btn-primary" id="entryEditSubmit">Save</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+<dialog id="ejectDialog" class="welcome">
+  <h2 id="ejectTitle">Eject drive?</h2>
+  <div id="ejectSummary" class="hint" style="margin-bottom:10px"></div>
+  <div id="ejectPrimaryWarning" class="alert-banner err hidden" style="margin:8px 0">
+    <div class="ab-body">
+      <div class="ab-title">⚠ This is the PRIMARY drive</div>
+      <div class="ab-desc">
+        BOT-SYNC's install, state, and rclone config live on this drive. <strong>Power the router off
+        before unplugging it.</strong> If you pull it while the router is on, the daemon will halt
+        mid-write and you may need to fsck the drive on a PC before it works again.
+        <br><br>
+        Recommended workflow:
+        <ol style="margin:6px 0 0 18px;padding:0">
+          <li>Click <strong>Shut down router</strong> from your router admin (or hold the power button).</li>
+          <li>Wait for the LEDs to settle, then unplug the USB drive.</li>
+          <li>Connect the drive to your PC using the steps below.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+  <div id="ejectFsHelp" class="provider-help hint" style="margin:8px 0;padding:10px 12px;background:var(--panel2);border-left:3px solid var(--accent);border-radius:4px"></div>
+  <p class="hint" id="ejectGenericHint">
+    Active syncs against this drive will be cancelled and the drive paused so nothing new starts.
+    Re-mounting it later auto-resumes.
+  </p>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="ejectCancel">Cancel</button>
+    <button class="btn-danger" id="ejectConfirm">Eject</button>
+  </div>
+</dialog>
+<script src="/ui/app.js?v=__BOTSYNC_VERSION__"></script>
+</body>
+</html>

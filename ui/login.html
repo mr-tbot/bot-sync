@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>🤖 BOT-SYNC · sign in</title>
+  <link rel="stylesheet" href="/ui/style.css?v=__BOTSYNC_VERSION__" />
+</head>
+<body class="login-body">
+  <div class="login-brand"><span class="logo">🤖</span> BOT-SYNC</div>
+  <main class="login-card">
+    <h1>🔐 Sign in</h1>
+    <p class="hint">Manage your USB-drive cloud sync.</p>
+    <form id="loginForm" autocomplete="on">
+      <label>Username
+        <input type="text" name="user" id="loginUser" autocomplete="username" required autofocus />
+      </label>
+      <label>Password
+        <input type="password" name="password" id="loginPass" autocomplete="current-password" required />
+      </label>
+      <button type="submit" class="btn-primary" id="loginBtn">Sign in</button>
+      <div id="loginError" class="error hidden"></div>
+    </form>
+    <p class="hint" style="margin-top:18px;font-size:11px;opacity:.7">
+      📦 BOT-SYNC · Cloud folder fetching system built for live production professionals.
+    </p>
+  </main>
+  <footer class="app-footer" style="border-top:none;margin-top:14px">
+    BOT-SYNC v__BOTSYNC_VERSION__ &mdash; Made with <span class="heart">♥</span> by <a href="https://MR-TBOT.COM" target="_blank" rel="noreferrer noopener">MR-TBOT.COM</a>
+  </footer>
+  <script>
+    const form = document.getElementById('loginForm');
+    const errBox = document.getElementById('loginError');
+    const btn = document.getElementById('loginBtn');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.classList.add('hidden');
+      btn.disabled = true; btn.textContent = 'Signing in…';
+      try {
+        const r = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            user: document.getElementById('loginUser').value,
+            password: document.getElementById('loginPass').value,
+          }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.ok) {
+          location.href = '/';
+          return;
+        }
+        errBox.textContent = j.error || ('login failed (' + r.status + ')');
+        errBox.classList.remove('hidden');
+      } catch (e) {
+        errBox.textContent = 'Network error: ' + e.message;
+        errBox.classList.remove('hidden');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Sign in';
+      }
+    });
+  </script>
+</body>
+</html>

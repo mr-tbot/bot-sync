@@ -1,0 +1,17 @@
+# UCI config for botsync. Edit and run `/etc/init.d/botsync restart`.
+# Master on/off switch — 0 stops the daemon entirely (survives reboot).
+
+config botsync 'main'
+    # Friendly hostname served on the LAN. Browsers can navigate to
+    # http://<hostname>/ instead of http://<router-ip>:<port>/.
+    # Set hostname_redirect to '0' to disable just the redirect (the DNS
+    # name still resolves), or empty hostname to disable everything.
+    option hostname 'bot.sync'
+    option hostname_redirect '1'
+
+    option enabled '1'
+    option port '8585'
+    option bind '0.0.0.0'
+    option user 'admin'
+    option password 'changeme'
+    option discord_webhook ''
