@@ -16,6 +16,7 @@
     <button data-tab="files" class="tab">📁 Files</button>
     <button data-tab="downloads" class="tab">⬇️ Downloads</button>
     <button data-tab="uploads" class="tab">⬆️ Uploads</button>
+    <button data-tab="projects" class="tab">🗂️ Projects</button>
     <button data-tab="remotes" class="tab">☁️ Accounts</button>
     <button data-tab="sharing" class="tab">📡 Sharing</button>
     <button data-tab="notifications" class="tab">🔔 Notifications</button>
@@ -283,6 +284,20 @@
         </tr></thead><tbody></tbody>
       </table>
     </section>
+  </section>
+
+  <section id="tab-projects" class="tabpane">
+    <div class="row-between">
+      <h2>🗂️ Projects</h2>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="search" id="projSearch" placeholder="Search projects or folders…" style="min-width:220px">
+        <button class="btn-secondary" id="projExpandAll" title="Expand all">⤢</button>
+        <button class="btn-secondary" id="projCollapseAll" title="Collapse all">⤡</button>
+        <button class="btn-primary" id="projAddNew">➕ New project</button>
+      </div>
+    </div>
+    <p class="hint">A project nests its tagged downloads / uploads under <code>&lt;drive&gt;/&lt;slug&gt;/</code>. The slug is fixed at creation time. Auto-delete and auto-sync run from the daemon and apply to every entry tagged with this project (primary or mirror).</p>
+    <div id="projectsList" class="panel"></div>
   </section>
 
   <section id="tab-remotes" class="tabpane">

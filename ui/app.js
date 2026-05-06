@@ -2236,7 +2236,21 @@ const _inlineNewProject = async (sel) => {
   }
   toast(`Project created (slug: ${r.slug})`);
   await refreshState();
-  if (sel && r.id) sel.value = r.id;
+  // refreshState() rebuilds tables but does NOT touch the *currently open*
+  // add/edit form's <select>s — they're populated only when the panel is
+  // first revealed. Manually repopulate every project-related select on the
+  // page so the brand-new project shows up immediately, then preselect it
+  // in the form that triggered the "+ New project" click.
+  const dlSel = $('#dlProject'); if (dlSel) populateProjectSelect(dlSel, dlSel.value);
+  const upSel = $('#upProject'); if (upSel) populateProjectSelect(upSel, upSel.value);
+  const edSel = $('#entryEditProject'); if (edSel) populateProjectSelect(edSel, edSel.value);
+  _populateExtraSelect($('#dlProjectExtra'));
+  _populateExtraSelect($('#upProjectExtra'));
+  _populateExtraSelect($('#entryEditProjectExtra'));
+  if (sel && r.id) {
+    populateProjectSelect(sel, r.id);
+    sel.value = r.id;
+  }
 };
 const _wireInlineNewProject = (btnId, selId) => {
   const btn = $(btnId);
@@ -2249,6 +2263,163 @@ _wireExtraTagAdd('#dlProjectExtraAdd', '#dlProjectExtra', '#dlProject', '#dlProj
 _wireExtraTagAdd('#upProjectExtraAdd', '#upProjectExtra', '#upProject', '#upProjectExtraChips');
 _wireExtraTagAdd('#entryEditProjectExtraAdd', '#entryEditProjectExtra', '#entryEditProject', '#entryEditProjectExtraChips');
 
+// ----- PROJECTS TAB -----
+// Dedicated tab listing every project with: search filter, collapse-all /
+// expand-all, member-entry list (downloads + uploads, primary vs mirror),
+// rename, auto-delete datetime, auto-sync schedule preset, "Sync now" and
+// "Delete" actions. Backed by /api/projects (GET/POST/PATCH/DELETE) and the
+// /api/projects/<id>/sync helper added in v0.7.13.
+let _PROJ_OPEN = {};   // pid -> bool, persists across renders
+let _PROJ_FILTER = '';
+const _PROJ_SCHEDULES = [
+  ['',       '— manual only —'],
+  ['15m',    'Every 15 min'],
+  ['1h',     'Hourly'],
+  ['6h',     'Every 6 hours'],
+  ['1d',     'Daily'],
+  ['7d',     'Weekly'],
+];
+const _projectMembers = (pid) => {
+  const dl = Object.entries(STATE.downloads || {})
+    .filter(([_, d]) => d.project_id === pid || (d.project_ids || []).includes(pid))
+    .map(([id, d]) => ({ id, kind: 'download', label: d.label || id, primary: d.project_id === pid, state: d.state, last_sync: d.last_sync }));
+  const ul = Object.entries(STATE.uploads || {})
+    .filter(([_, u]) => u.project_id === pid || (u.project_ids || []).includes(pid))
+    .map(([id, u]) => ({ id, kind: 'upload', label: u.label || id, primary: u.project_id === pid, state: u.state, last_sync: u.last_sync }));
+  return [...dl, ...ul];
+};
+const _scheduleSelect = (current) => {
+  const sel = el('select', {});
+  // Match the daemon's _schedule_seconds parser — accept any "Ns/Nm/Nh/Nd"
+  // value, but expose a small preset list. If the saved value isn't a preset
+  // we add it as a custom row at the top so it remains selectable.
+  const cur = (current || '').toString().trim().toLowerCase();
+  const known = _PROJ_SCHEDULES.some(([v]) => v === cur);
+  if (cur && !known) sel.append(el('option', { value: cur, selected: true }, `Custom: ${cur}`));
+  _PROJ_SCHEDULES.forEach(([v, lbl]) => {
+    const opt = el('option', { value: v }, lbl);
+    if (v === cur) opt.selected = true;
+    sel.append(opt);
+  });
+  return sel;
+};
+const renderProjects = () => {
+  const host = $('#projectsList');
+  if (!host) return;
+  host.innerHTML = '';
+  const projects = STATE.projects || {};
+  const ids = Object.keys(projects).sort((a, b) => (projects[a].name || '').localeCompare(projects[b].name || ''));
+  if (!ids.length) {
+    host.append(el('p', { class: 'hint' }, 'No projects yet. Use "+ New project" or create one inline from the Downloads / Uploads add panels.'));
+    return;
+  }
+  const filt = (_PROJ_FILTER || '').trim().toLowerCase();
+  let shown = 0;
+  ids.forEach(pid => {
+    const p = projects[pid];
+    const members = _projectMembers(pid);
+    const haystack = [
+      p.name, p.slug,
+      ...members.map(m => m.label),
+    ].join(' ').toLowerCase();
+    if (filt && !haystack.includes(filt)) return;
+    shown++;
+    const open = _PROJ_OPEN[pid] !== false; // default open
+    const det = el('details', { class: 'project-card', style: 'border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px' });
+    if (open) det.open = true;
+    det.addEventListener('toggle', () => { _PROJ_OPEN[pid] = det.open; });
+
+    const summary = el('summary', { style: 'cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap' },
+      el('strong', {}, p.name || '(unnamed)'),
+      el('span', { class: 'pill muted' }, p.slug || ''),
+      el('span', { class: 'pill ' + (members.length ? 'ok' : 'muted') }, `${members.length} entr${members.length === 1 ? 'y' : 'ies'}`),
+      p.auto_sync_schedule ? el('span', { class: 'pill', title: 'Auto-sync interval' }, `⏱ ${p.auto_sync_schedule}`) : '',
+      p.auto_delete_at ? el('span', { class: 'pill', title: 'Auto-delete at' }, `🗑 ${new Date(p.auto_delete_at * 1000).toLocaleString()}`) : '',
+    );
+    det.append(summary);
+
+    // Member list
+    const memList = el('div', { style: 'margin:8px 0' });
+    if (!members.length) {
+      memList.append(el('p', { class: 'hint' }, 'No downloads or uploads tagged with this project yet.'));
+    } else {
+      const table = el('table', { class: 'data' },
+        el('thead', {}, el('tr', {},
+          el('th', {}, 'Kind'), el('th', {}, 'Label'), el('th', {}, 'Tag'),
+          el('th', {}, 'State'), el('th', {}, 'Last sync'))),
+      );
+      const tb = el('tbody', {});
+      members.forEach(m => {
+        tb.append(el('tr', {},
+          el('td', {}, m.kind),
+          el('td', {}, m.label),
+          el('td', {}, el('span', { class: 'pill ' + (m.primary ? 'ok' : 'muted') }, m.primary ? 'primary' : 'mirror')),
+          el('td', {}, m.state || '—'),
+          el('td', {}, m.last_sync ? new Date(m.last_sync * 1000).toLocaleString() : '—'),
+        ));
+      });
+      table.append(tb);
+      memList.append(table);
+    }
+    det.append(memList);
+
+    // Edit form
+    const nameIn = el('input', { type: 'text', value: p.name || '' });
+    const adIn = el('input', { type: 'datetime-local', value: _epochToDatetimeLocal(p.auto_delete_at || 0) });
+    const schedSel = _scheduleSelect(p.auto_sync_schedule);
+    const form = el('div', { class: 'panel', style: 'margin:0' },
+      el('div', { style: 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px' },
+        el('label', {}, 'Name', nameIn),
+        el('label', {}, 'Auto-delete at', adIn),
+        el('label', {}, 'Auto-sync schedule', schedSel),
+      ),
+      el('div', { class: 'row-end', style: 'gap:6px;margin-top:8px;flex-wrap:wrap' },
+        el('button', { class: 'btn-primary', on: { click: async () => {
+          const body = {
+            name: nameIn.value.trim(),
+            auto_delete_at: _datetimeLocalToEpoch(adIn.value),
+            auto_sync_schedule: schedSel.value || '',
+          };
+          const r = await api(`/api/projects/${pid}`, { method: 'PATCH', body });
+          if (r && r.ok !== false) { toast('Project saved'); refreshState(); }
+          else toast((r && r.error) || 'Save failed', true);
+        } } }, 'Save'),
+        el('button', { class: 'btn-secondary', on: { click: async () => {
+          const r = await api(`/api/projects/${pid}/sync`, { method: 'POST' });
+          if (r && r.ok !== false) toast(`Queued ${r.queued || 0} entr${(r.queued === 1) ? 'y' : 'ies'}`);
+          else toast((r && r.error) || 'Sync failed', true);
+          refreshState();
+        } } }, '🔄 Sync now'),
+        el('button', { class: 'btn-secondary', style: 'color:var(--err)', on: { click: async () => {
+          if (members.length) return toast('Reassign or delete tagged entries first', true);
+          if (!confirm(`Delete project "${p.name}"? Entries are unaffected, but the slug "${p.slug}" becomes available for reuse.`)) return;
+          const r = await api(`/api/projects/${pid}`, { method: 'DELETE' });
+          if (r && r.ok !== false) { toast('Project deleted'); refreshState(); }
+          else toast((r && r.error) || 'Delete failed', true);
+        } } }, '🗑 Delete'),
+      ),
+    );
+    det.append(form);
+    host.append(det);
+  });
+  if (!shown && filt) {
+    host.append(el('p', { class: 'hint' }, `No projects or folders match "${_PROJ_FILTER}".`));
+  }
+};
+$('#projSearch') && $('#projSearch').addEventListener('input', (e) => {
+  _PROJ_FILTER = e.target.value || '';
+  renderProjects();
+});
+$('#projExpandAll') && $('#projExpandAll').addEventListener('click', () => {
+  Object.keys(STATE.projects || {}).forEach(pid => { _PROJ_OPEN[pid] = true; });
+  renderProjects();
+});
+$('#projCollapseAll') && $('#projCollapseAll').addEventListener('click', () => {
+  Object.keys(STATE.projects || {}).forEach(pid => { _PROJ_OPEN[pid] = false; });
+  renderProjects();
+});
+$('#projAddNew') && $('#projAddNew').addEventListener('click', () => _inlineNewProject(null));
+
 const renderAll = () => {
   if (!STATE) return;
   renderStatus();
@@ -2260,6 +2431,7 @@ const renderAll = () => {
   renderFiles();
   renderDownloads();
   renderUploads();
+  renderProjects();
   renderSyncLog('download');
   renderSyncLog('upload');
   renderRemotes();

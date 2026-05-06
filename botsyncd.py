@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.12"
+VERSION = "0.7.13"
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"
@@ -615,6 +615,10 @@ class Store:
         for proj in (self._data.get("projects") or {}).values():
             if isinstance(proj, dict) and "auto_delete_at" not in proj:
                 proj["auto_delete_at"] = None
+        for proj in (self._data.get("projects") or {}).values():
+            if isinstance(proj, dict):
+                proj.setdefault("auto_sync_schedule", "")
+                proj.setdefault("last_auto_sync_at", 0)
 
     def save(self) -> None:
         with self._lock:
@@ -3566,6 +3570,23 @@ class App:
                     continue
                 self._autosync_attempt("upload", uid_, item.get("label", uid_))
 
+        # Project-level auto-sync: any project with a positive
+        # ``auto_sync_schedule`` whose interval has elapsed since
+        # ``last_auto_sync_at`` will queue all of its active member
+        # entries (downloads + uploads with project_id or project_ids
+        # containing this pid).
+        for pid, proj in (s.get("projects") or {}).items():
+            interval = self._schedule_seconds(proj.get("auto_sync_schedule"))
+            if interval <= 0:
+                continue
+            last = float(proj.get("last_auto_sync_at") or 0)
+            if (time.time() - last) < interval:
+                continue
+            try:
+                self.api_project_sync_now(pid)
+            except Exception:
+                logger.exception("project autosync %s failed", pid)
+
     def _autosync_attempt(self, kind: str, target_id: str, label: str) -> None:
         # Guard against the target disappearing between tick and attempt.
         bucket = "downloads" if kind == "download" else "uploads"
@@ -4211,10 +4232,10 @@ class App:
         return {"ok": True, "id": pid, "slug": slug}
 
     def api_project_patch(self, pid: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        # Only the display name and auto-delete timestamp are editable;
-        # slug is frozen because changing it would orphan existing on-disk
-        # folders. Users who want a new slug should create a new project
-        # and reassign entries.
+        # Only the display name, auto-delete timestamp, and auto-sync
+        # schedule are editable. The slug is frozen because changing it
+        # would orphan existing on-disk folders. Users who want a new
+        # slug should create a new project and reassign entries.
         name = (body.get("name") or "").strip() if "name" in body else None
         if "name" in body and not name:
             return {"ok": False, "error": "name required"}
@@ -4225,8 +4246,38 @@ class App:
                     p["name"] = name
                 if "auto_delete_at" in body:
                     p["auto_delete_at"] = self._parse_auto_delete(body.get("auto_delete_at"))
+                if "auto_sync_schedule" in body:
+                    raw = body.get("auto_sync_schedule")
+                    p["auto_sync_schedule"] = ("" if raw in (None, "", "manual", "off", "none") else str(raw))
+                    # Reset the timer so the new schedule kicks in promptly.
+                    p["last_auto_sync_at"] = 0
         self.store.update(_u)
         return {"ok": True}
+
+    def api_project_sync_now(self, pid: str) -> Dict[str, Any]:
+        """Queue every download/upload tagged with this project (primary or
+        mirror). Called by the UI's "Sync now" button and by the autosync
+        loop when a project's auto_sync_schedule is due."""
+        s = self.store.get()
+        if not (s.get("projects") or {}).get(pid):
+            return {"ok": False, "error": "unknown project"}
+        queued = 0
+        for did, item in (s.get("downloads") or {}).items():
+            if item.get("project_id") == pid or pid in (item.get("project_ids") or []):
+                if item.get("state") == "active":
+                    self._autosync_attempt("download", did, item.get("label", did))
+                    queued += 1
+        for uid_, item in (s.get("uploads") or {}).items():
+            if item.get("project_id") == pid or pid in (item.get("project_ids") or []):
+                if item.get("state") == "active":
+                    self._autosync_attempt("upload", uid_, item.get("label", uid_))
+                    queued += 1
+        def _stamp(d: Dict[str, Any]) -> None:
+            p = (d.get("projects") or {}).get(pid)
+            if p:
+                p["last_auto_sync_at"] = time.time()
+        self.store.update(_stamp)
+        return {"ok": True, "queued": queued}
 
     def api_project_delete(self, pid: str) -> Dict[str, Any]:
         s = self.store.get()
@@ -6026,6 +6077,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(a.api_project_patch(m.group(1), body))
         if m and method == "DELETE":
             return self._send_json(a.api_project_delete(m.group(1)))
+        m = re.match(r"^/api/projects/([^/]+)/sync$", path)
+        if m and method == "POST":
+            return self._send_json(a.api_project_sync_now(m.group(1)))
 
         # ---- downloads ----
         if path == "/api/downloads" and method == "GET":
