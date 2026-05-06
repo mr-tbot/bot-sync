@@ -1,7 +1,9 @@
 # 🤖 BOT-SYNC
 
 
-
+> **💛 Enjoying BOT-SYNC?** It's built and maintained by one developer in their spare time. If it's saved you a venue load-in or a stressful upload, please consider chipping in — donations directly fund new backends, hardware testing, and bug-fix turnaround.
+>
+> [**💛 Donate via PayPal**](https://www.paypal.com/donate/?business=7DQWLBARMM3FE&no_recurring=0&item_name=Support+the+development+and+growth+of+innovative+MR_TBOT+projects.&currency_code=USD) · [🐛 Report a bug / request a feature](https://github.com/mr-tbot/bot-sync/issues)
 
 
 USB-drive-backed cloud-folder sync appliance for OpenWrt routers (primary
