@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.14"
+VERSION = "0.7.15"
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"
@@ -2038,6 +2038,11 @@ class Job:
         self.bytes_total = 0
         self.eta_seconds = 0
         self.transfer_rate = 0     # bytes/sec
+        # Number of files actually transferred during this run, surfaced
+        # from rclone's JSON stats.transfers field. Used by the notifier
+        # to decide whether a "completed" event is worth pinging Discord
+        # about — once a folder has synced once, we suppress no-op runs.
+        self.files_transferred = 0
         self.started_at: Optional[float] = None
         self.finished_at: Optional[float] = None
         self.error: Optional[str] = None
@@ -2050,6 +2055,7 @@ class Job:
             "id": self.id, "type": self.type, "target_id": self.target_id,
             "label": self.label, "state": self.state, "progress": round(self.progress, 1),
             "bytes_done": self.bytes_done, "bytes_total": self.bytes_total,
+            "files_transferred": self.files_transferred,
             "eta_seconds": self.eta_seconds, "transfer_rate": self.transfer_rate,
             "started_at": self.started_at, "finished_at": self.finished_at,
             "error": self.error, "log_tail": list(self.log)[-20:],
@@ -2184,6 +2190,28 @@ class JobManager:
         self.set_concurrency("upload", ul)
         return {"global": gmax, "download": dl, "upload": ul}
 
+    def _target_first_sync(self, job: "Job") -> bool:
+        """Return True iff this download/upload entry has never completed
+        a successful sync before. Used to gate "started"/"completed" pings
+        so a polling schedule on an unchanged folder doesn't spam Discord.
+
+        Non download/upload jobs (size scans, ad-hoc admin tasks) always
+        count as "first" — we don't want to silence those.
+        """
+        if job.type not in ("download", "upload"):
+            return True
+        try:
+            d = self.store.get()
+        except Exception:
+            return True
+        bucket = "downloads" if job.type == "download" else "uploads"
+        item = (d.get(bucket) or {}).get(job.target_id)
+        if not item:
+            return True
+        # last_sync is stamped on every successful run by _push_log; if
+        # it's set, the entry has at least one prior good sync.
+        return not bool(item.get("last_sync"))
+
     def submit(self, jtype: str, target_id: str, label: str, runner: Callable[[Job], None]) -> Job:
         jid = secrets.token_hex(6)
         job = Job(jid, jtype, target_id, label)
@@ -2258,7 +2286,14 @@ class JobManager:
                 job.state = "running"
                 job.started_at = time.time()
                 logger.info("job %s start: %s %s", job.id, job.type, job.label)
-                if self.notifier:
+                # Decide whether this is the entry's *first* sync. If it
+                # is, every event for the run gets pushed to Discord/etc.
+                # If it has synced before, we suppress the per-run start
+                # and "completed - 0 bytes" pings so repeat polls of an
+                # unchanged folder don't spam the channel. Failures and
+                # cancellations always notify regardless.
+                first_sync = self._target_first_sync(job)
+                if self.notifier and first_sync:
                     self.notifier.emit("job.started", f"{job.type}: {job.label}",
                                        job_id=job.id, type=job.type)
                 try:
@@ -2281,9 +2316,18 @@ class JobManager:
                 if self.notifier:
                     dur = (job.finished_at or 0) - (job.started_at or 0)
                     if final_state == "done":
-                        self.notifier.emit("job.completed", f"{job.type} done: {job.label}",
-                                           job_id=job.id, bytes=job.bytes_done,
-                                           duration_s=int(dur))
+                        # Suppress no-op "completed" pings on repeat runs:
+                        # if the entry has already synced once and this run
+                        # transferred zero files / zero bytes, the channel
+                        # would otherwise get spammed every schedule tick.
+                        changed = (int(job.files_transferred or 0) > 0
+                                   or int(job.bytes_done or 0) > 0)
+                        if first_sync or changed:
+                            self.notifier.emit(
+                                "job.completed", f"{job.type} done: {job.label}",
+                                job_id=job.id, bytes=job.bytes_done,
+                                files_transferred=int(job.files_transferred or 0),
+                                duration_s=int(dur))
                     elif final_state == "cancelled":
                         self.notifier.emit("job.cancelled", f"{job.type} cancelled: {job.label}",
                                            job_id=job.id)
@@ -2302,6 +2346,7 @@ class JobManager:
                         "finished_at": job.finished_at,
                         "duration_s": int((job.finished_at or 0) - (job.started_at or 0)),
                         "bytes": int(job.bytes_done or 0),
+                        "files_transferred": int(job.files_transferred or 0),
                         "error": job.error,
                     }
                     def _push_log(d: Dict[str, Any], _e=entry, _t=job.type, _j=job, _fs=final_state) -> None:
@@ -2434,6 +2479,16 @@ def runner_rclone(rclone: Rclone, args: List[str], src_label: str) -> Callable[[
                         job.progress = (job.bytes_done / job.bytes_total) * 100
                     job.transfer_rate = int(stats.get("speed", 0))
                     job.eta_seconds = int(stats.get("eta") or 0)
+                    # rclone's stats.transfers counts completed file
+                    # transfers since process start. We expose this so
+                    # the job runner can tell "nothing actually changed"
+                    # from "X files moved" when deciding to notify.
+                    try:
+                        ft = int(stats.get("transfers") or 0)
+                        if ft > job.files_transferred:
+                            job.files_transferred = ft
+                    except (TypeError, ValueError):
+                        pass
         finally:
             # Always reap the child, even on exceptions inside the loop, so
             # we never leak a zombie rclone process.
