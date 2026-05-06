@@ -1837,6 +1837,26 @@ const renderAlerts = () => {
       ),
     ));
   }
+  const bs = STATE.bot_sync_status || {};
+  if (bs.update_available) {
+    const installed = bs.installed_version || 'unknown';
+    const latest = bs.latest_version || '?';
+    const failed = bs.last_update_error;
+    root.append(el('div', { class: failed ? 'alert-banner err' : 'alert-banner' },
+      el('div', { class: 'ab-body' },
+        el('div', { class: 'ab-title' },
+          failed ? `⚠️ BOT-SYNC update failed — still on ${installed}`
+                 : `🔄 BOT-SYNC update available — ${latest}`),
+        el('div', { class: 'ab-desc' },
+          failed ? `Last attempt: ${failed} (latest available: ${latest})`
+                 : `Installed: ${installed}. Click Update now to download and install the latest BOT-SYNC release from GitHub.`),
+      ),
+      el('div', { class: 'ab-actions' },
+        bs.release_url ? el('a', { class: 'btn-link', href: bs.release_url, target: '_blank', rel: 'noreferrer noopener' }, 'View on GitHub') : null,
+        el('button', { class: 'btn-primary', disabled: !!bs.updating, on: { click: doBotsyncUpdate } }, bs.updating ? 'Updating…' : (failed ? 'Try again' : 'Update now')),
+      ),
+    ));
+  }
   const reauths = Object.entries(STATE.remotes || {}).filter(([, r]) => r.needs_reauth);
   if (reauths.length) {
     const names = reauths.map(([n]) => n).join(', ');
@@ -1859,6 +1879,19 @@ async function doRcloneUpdate() {
   const r = await api('/api/system/rclone/update', { method: 'POST', body: {} });
   if (r && r.ok) {
     toast(`rclone updated: ${r.version_before || '?'} → ${r.version_after || '?'}`);
+  } else {
+    toast('Update failed: ' + (r && (r.error || r.stderr) || 'unknown error'), true);
+  }
+  refreshState();
+}
+
+async function doBotsyncUpdate() {
+  if (!confirm('Update BOT-SYNC now? This downloads the latest release from GitHub and restarts the daemon. The web UI may be unreachable for 10–30 seconds.')) return;
+  toast('Starting BOT-SYNC update… the daemon will restart shortly');
+  const r = await api('/api/system/botsync/update', { method: 'POST', body: {} });
+  if (r && r.ok) {
+    toast('Update started. Reloading in 20s…');
+    setTimeout(() => { try { location.reload(); } catch (_) {} }, 20000);
   } else {
     toast('Update failed: ' + (r && (r.error || r.stderr) || 'unknown error'), true);
   }
@@ -1893,6 +1926,33 @@ const renderRcloneStatus = () => {
       el('pre', { style: 'white-space:pre-wrap;font-size:12px;color:var(--muted)' }, rs.release_notes),
     ));
   }
+};
+
+const renderBotsyncStatus = () => {
+  const root = $('#botsyncUpdatePanel'); if (!root) return;
+  const bs = STATE.bot_sync_status || {};
+  root.innerHTML = '';
+  const grid = el('div', { class: 'grid' });
+  const rows = [
+    ['Installed', bs.installed_version || '—'],
+    ['Latest available', bs.latest_version || '—'],
+    ['Update available', bs.update_available ? 'YES' : 'no'],
+    ['Latest commit', bs.latest_commit_sha ? bs.latest_commit_sha.slice(0, 7) : '—'],
+    ['Latest commit message', bs.latest_commit_msg || '—'],
+    ['Last checked', since(bs.checked_at) || 'never'],
+    ['Last update attempt', since(bs.last_update_attempt) || 'never'],
+    ['Last update', bs.last_update_to ? `${bs.last_update_from || '?'} → ${bs.last_update_to}` : '—'],
+    ['Last update error', bs.last_update_error || '—'],
+    ['Check error', bs.check_error || '—'],
+  ];
+  rows.forEach(([k, v]) => grid.append(el('div', { class: 'k' }, k), el('div', {}, String(v ?? ''))));
+  root.append(grid);
+  const actions = el('div', { class: 'row-end', style: 'margin-top:10px;gap:8px' },
+    bs.release_url ? el('a', { class: 'btn-link', href: bs.release_url, target: '_blank', rel: 'noreferrer noopener' }, '🔗 View on GitHub') : null,
+    el('button', { class: 'btn-secondary', on: { click: async () => { toast('Checking GitHub…'); await api('/api/system/botsync/check', { method: 'POST', body: {} }); refreshState(); } } }, '🔄 Check for updates'),
+    el('button', { class: 'btn-primary', disabled: !bs.update_available || !!bs.updating, on: { click: doBotsyncUpdate } }, bs.updating ? 'Updating…' : '⬇️ Update now'),
+  );
+  root.append(actions);
 };
 
 // ----- DASHBOARD -----
@@ -2468,6 +2528,7 @@ const renderAll = () => {
   renderSettings();
   renderSystem();
   renderRcloneStatus();
+  renderBotsyncStatus();
   renderConcurrencySelectors();
   renderFooterVersion();
 };

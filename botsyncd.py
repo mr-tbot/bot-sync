@@ -55,7 +55,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.17"
+VERSION = "0.7.18"
+# GitHub repo used by the in-app update notifier. Compared against the latest
+# commit on the default branch to surface a banner when a new build is out.
+UPSTREAM_REPO = "mr-tbot/bot-sync"
+UPSTREAM_REPO_URL = "https://github.com/" + UPSTREAM_REPO
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"
@@ -155,6 +159,27 @@ DEFAULT_STATE: Dict[str, Any] = {
         "last_update_from": None,
         "last_update_to": None,
     },
+    "bot_sync_status": {
+        # Populated by App._update_check_loop in parallel with rclone_status.
+        # Compares the daemon's compiled-in VERSION against the latest commit
+        # message on the upstream default branch (the "vX.Y.Z: …" pattern
+        # we use for release commits).
+        "installed_version": None,   # e.g. "0.7.18"
+        "latest_version": None,      # e.g. "0.7.19"
+        "update_available": False,
+        "checked_at": None,
+        "check_error": None,
+        "commit_sha": None,          # head commit on default branch
+        "commit_message": None,      # first line of head commit
+        "commit_url": None,          # GitHub link to the commit
+        "release_url": None,         # GitHub repo / releases page
+        "announced_version": None,   # last version we've already notified for
+        "updating": False,           # in-app update in progress
+        "last_update_attempt": None,
+        "last_update_error": None,
+        "last_update_from": None,
+        "last_update_to": None,
+    },
 }
 
 # Event types the system can emit. UI shows these as toggles per channel.
@@ -183,6 +208,9 @@ EVENT_TYPES = [
     "rclone.update_available",
     "rclone.update_installed",
     "rclone.update_failed",
+    "botsync.update_available",
+    "botsync.update_installed",
+    "botsync.update_failed",
 ]
 SEVERITIES = ["info", "warn", "error"]
 
@@ -216,6 +244,9 @@ EVENT_SEVERITY = {
     "rclone.update_available": "info",
     "rclone.update_installed": "info",
     "rclone.update_failed": "error",
+    "botsync.update_available": "info",
+    "botsync.update_installed": "info",
+    "botsync.update_failed": "error",
 }
 
 # Substrings (case-insensitive) in rclone error output that indicate a token /
@@ -3217,6 +3248,13 @@ class App:
             for item in (d.get("uploads") or {}).values():
                 if "warning" in item:
                     item.pop("warning", None)
+            # Clear "updating" flags that were set just before a restart -
+            # the daemon coming back up means the update either finished
+            # or was aborted; either way the spinner needs to stop.
+            for key in ("rclone_status", "bot_sync_status"):
+                rs = d.get(key)
+                if isinstance(rs, dict) and rs.get("updating"):
+                    rs["updating"] = False
         try:
             self.store.update(_m)
         except Exception:
@@ -3743,6 +3781,10 @@ class App:
                 self.refresh_rclone_status(notify=True)
             except Exception:
                 logger.exception("rclone update check")
+            try:
+                self.refresh_botsync_status(notify=True)
+            except Exception:
+                logger.exception("botsync update check")
             # 24h between checks.
             if self._stop_event.wait(24 * 3600):
                 return
@@ -3828,6 +3870,226 @@ class App:
                 f"rclone update failed: {res.get('error') or 'unknown error'}",
                 error=res.get("error"))
         return res
+
+    # ------- bot-sync self-update -------
+
+    def _fetch_upstream_head(self, timeout: float = 8.0) -> Dict[str, Any]:
+        """Hit GitHub for the latest commit on the default branch and pull
+        out a parseable version tag. Stdlib only so it works on a stripped
+        OpenWrt python install. Mock mode returns a fixed "newer" version
+        so the UI can be exercised without network."""
+        if IS_MOCK:
+            return {"ok": True,
+                    "latest_version": "0.7.99",
+                    "commit_sha": "deadbeef" * 5,
+                    "commit_message": "v0.7.99: mock upstream commit",
+                    "commit_url": UPSTREAM_REPO_URL + "/commit/deadbeef",
+                    "release_url": UPSTREAM_REPO_URL + "/releases"}
+        url = "https://api.github.com/repos/" + UPSTREAM_REPO + "/commits/HEAD"
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"botsyncd/{VERSION}",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        sha = (data.get("sha") or "")[:40]
+        msg = ((data.get("commit") or {}).get("message") or "").splitlines()[:1]
+        first_line = msg[0] if msg else ""
+        # Walk recent commits if HEAD doesn't carry a "vX.Y.Z" tag — the user
+        # may have landed a docs commit on top of the last release.
+        latest_v = self._extract_version(first_line)
+        if not latest_v:
+            try:
+                hist_url = ("https://api.github.com/repos/" + UPSTREAM_REPO +
+                            "/commits?per_page=20")
+                hist_req = urllib.request.Request(hist_url, headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": f"botsyncd/{VERSION}",
+                })
+                with urllib.request.urlopen(hist_req, timeout=timeout) as resp:
+                    hist = json.loads(resp.read().decode("utf-8", "replace"))
+                for h in hist or []:
+                    line = (((h.get("commit") or {}).get("message") or "")
+                            .splitlines()[:1] or [""])[0]
+                    v = self._extract_version(line)
+                    if v:
+                        latest_v = v
+                        break
+            except Exception:
+                pass
+        return {"ok": True,
+                "latest_version": latest_v,
+                "commit_sha": sha,
+                "commit_message": first_line[:240],
+                "commit_url": UPSTREAM_REPO_URL + "/commit/" + sha if sha else UPSTREAM_REPO_URL,
+                "release_url": UPSTREAM_REPO_URL + "/releases"}
+
+    @staticmethod
+    def _extract_version(text: str) -> Optional[str]:
+        """Pick the first ``vX.Y.Z`` (or ``vX.Y.Z.W``) token out of a string."""
+        m = re.search(r"\bv?(\d+\.\d+\.\d+(?:\.\d+)?)\b", text or "")
+        return m.group(1) if m else None
+
+    def refresh_botsync_status(self, notify: bool = True) -> Dict[str, Any]:
+        """Compare daemon VERSION to upstream HEAD; persist + maybe notify."""
+        installed = VERSION
+        res = self._fetch_upstream_head()
+        if not res.get("ok"):
+            def _err(d: Dict[str, Any], e=res.get("error")) -> None:
+                bs = d.setdefault("bot_sync_status", {})
+                bs["installed_version"] = installed
+                bs["check_error"] = e
+                bs["checked_at"] = time.time()
+            self.store.update(_err)
+            return self.store.get().get("bot_sync_status", {})
+        latest = res.get("latest_version")
+        avail = bool(latest and _version_lt(installed, latest))
+        prev = (self.store.get().get("bot_sync_status") or {}).get("announced_version")
+
+        def _apply(d: Dict[str, Any]) -> None:
+            bs = d.setdefault("bot_sync_status", {})
+            bs["installed_version"] = installed
+            bs["latest_version"] = latest
+            bs["update_available"] = avail
+            bs["checked_at"] = time.time()
+            bs["check_error"] = None
+            bs["commit_sha"] = res.get("commit_sha")
+            bs["commit_message"] = res.get("commit_message")
+            bs["commit_url"] = res.get("commit_url")
+            bs["release_url"] = res.get("release_url")
+            if avail:
+                bs["announced_version"] = latest
+        self.store.update(_apply)
+
+        if notify and avail and prev != latest:
+            self.notifier.emit(
+                "botsync.update_available",
+                f"BOT-SYNC {latest} is available (installed {installed})",
+                installed=installed, latest=latest,
+                url=res.get("commit_url") or res.get("release_url"))
+        return self.store.get().get("bot_sync_status", {})
+
+    @staticmethod
+    def _update_bootstrap_script() -> str:
+        """Return a shell script that downloads the latest tarball and runs
+        its install/update.sh. Used as a fallback when no on-disk
+        update.sh is present (e.g. an install deployed before that
+        script shipped). Stays self-contained: only POSIX sh + curl/wget
+        + tar are required, all of which exist on every supported target.
+        """
+        return ("#!/bin/sh\n"
+                "set -eu\n"
+                "REPO=\"" + UPSTREAM_REPO + "\"\n"
+                "BRANCH=\"main\"\n"
+                "WORK=\"$(mktemp -d 2>/dev/null || mktemp -d -t botsync-bs)\"\n"
+                "trap 'rm -rf \"$WORK\"' EXIT\n"
+                "URL=\"https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH\"\n"
+                "echo \"[bot-sync-bootstrap] downloading $URL\"\n"
+                "if command -v curl >/dev/null 2>&1; then\n"
+                "  curl -fsSL \"$URL\" -o \"$WORK/src.tgz\"\n"
+                "elif command -v wget >/dev/null 2>&1; then\n"
+                "  wget -q -O \"$WORK/src.tgz\" \"$URL\"\n"
+                "else\n"
+                "  echo '[bot-sync-bootstrap] curl/wget required' >&2; exit 2\n"
+                "fi\n"
+                "mkdir -p \"$WORK/src\" && tar -xzf \"$WORK/src.tgz\" -C \"$WORK/src\"\n"
+                "UPDATER=\"$(find \"$WORK/src\" -maxdepth 3 -name update.sh -path '*install/update.sh' | head -n1)\"\n"
+                "if [ -z \"$UPDATER\" ]; then\n"
+                "  echo '[bot-sync-bootstrap] update.sh missing in tarball' >&2; exit 2\n"
+                "fi\n"
+                "exec sh \"$UPDATER\" --from-daemon \"$@\"\n")
+
+    def perform_botsync_update(self) -> Dict[str, Any]:
+        """Run the install/update.sh helper to pull the latest commit and
+        restart the daemon. Updates store + emits notification on result.
+
+        Update is best-effort and only supported when the daemon is
+        running off a writable checkout (router install ships the script
+        on the USB drive). On platforms where the script is missing we
+        return ``{ok: False, error: …}`` so the UI can fall back to
+        sending the user to the GitHub releases page instead.
+        """
+        bs_now = self.store.get().get("bot_sync_status", {}) or {}
+        if bs_now.get("updating"):
+            return {"ok": False, "error": "update already in progress"}
+        before = VERSION
+        # Find the update script next to this file. install/update.sh on
+        # router; install/update.sh in the source tree on dev machines.
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(here, "install", "update.sh"),
+            os.path.join(here, "..", "install", "update.sh"),
+            os.path.join(ROOT, "install", "update.sh"),
+        ]
+        script = next((p for p in candidates if os.path.isfile(p)), None)
+        if not script:
+            # Fallback: write a minimal bootstrap that downloads the tarball
+            # and runs *its* update.sh. This means a user can always update
+            # even if their on-disk install was deployed before update.sh
+            # existed (or got wiped by a partial install).
+            try:
+                bootstrap_dir = os.path.join(ROOT, "install")
+                os.makedirs(bootstrap_dir, exist_ok=True)
+                script = os.path.join(bootstrap_dir, "update_bootstrap.sh")
+                with open(script, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(self._update_bootstrap_script())
+                os.chmod(script, 0o755)
+            except Exception as e:
+                err_msg = ("update.sh not found and bootstrap write failed (" +
+                           str(e) + ") — please update manually from " +
+                           UPSTREAM_REPO_URL)
+                self.store.update(lambda d: d.setdefault("bot_sync_status", {}).update({
+                    "last_update_attempt": time.time(),
+                    "last_update_error": err_msg,
+                }))
+                self.notifier.emit("botsync.update_failed",
+                                   f"BOT-SYNC update failed: {err_msg}",
+                                   error=err_msg)
+                return {"ok": False, "error": err_msg}
+
+        self.store.update(lambda d: d.setdefault("bot_sync_status", {}).update({
+            "updating": True,
+            "last_update_attempt": time.time(),
+            "last_update_error": None,
+        }))
+        try:
+            # Spawn detached so the script can restart the daemon (which
+            # would kill us if we were waiting on it). We log the script's
+            # output to a fixed file so the user can fetch it later.
+            log_path = os.path.join(LOG_DIR, "update.log")
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(log_path, "ab") as fh:
+                fh.write(("\n--- update started %s ---\n"
+                          % time.strftime("%Y-%m-%dT%H:%M:%S")).encode("utf-8"))
+            cmd = ["sh", script, "--from-daemon"]
+            popen_kw: Dict[str, Any] = dict(stdout=open(log_path, "ab"),
+                                            stderr=subprocess.STDOUT)
+            if not IS_WINDOWS:
+                popen_kw["start_new_session"] = True
+            subprocess.Popen(cmd, **popen_kw)
+        except Exception as e:
+            err_msg = str(e)
+            self.store.update(lambda d: d.setdefault("bot_sync_status", {}).update({
+                "updating": False,
+                "last_update_error": err_msg,
+                "last_update_from": before,
+            }))
+            self.notifier.emit("botsync.update_failed",
+                               f"BOT-SYNC update failed: {err_msg}",
+                               error=err_msg)
+            return {"ok": False, "error": err_msg}
+        # The script will restart us; the post-restart daemon will see the
+        # new VERSION on next refresh. We don't clear `updating` here so
+        # the UI keeps the spinner up until the daemon comes back. The
+        # restart watchdog drops the flag on next clean boot.
+        self.notifier.emit("botsync.update_installed",
+                           f"BOT-SYNC update started (was {before}); daemon will restart shortly.",
+                           version_before=before)
+        return {"ok": True, "started": True, "version_before": before,
+                "log": log_path}
 
     # ------- API handlers -------
 
@@ -4251,6 +4513,20 @@ class App:
         beta = bool((body or {}).get("beta"))
         # selfupdate can take 30-60s on slow links; the route will block.
         return self.perform_rclone_update(beta=beta)
+
+    # ---- bot-sync version / update ----
+
+    def api_botsync_status(self) -> Dict[str, Any]:
+        return {"ok": True, "botsync": self.store.get().get("bot_sync_status", {}) or {},
+                "version": VERSION,
+                "repo_url": UPSTREAM_REPO_URL}
+
+    def api_botsync_check(self) -> Dict[str, Any]:
+        bs = self.refresh_botsync_status(notify=True)
+        return {"ok": True, "botsync": bs}
+
+    def api_botsync_update(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        return self.perform_botsync_update()
 
     # ---- projects ----
     # A project is a lightweight grouping that nests its downloads and
@@ -6236,6 +6512,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(a.api_rclone_check())
         if path == "/api/system/rclone/update" and method == "POST":
             return self._send_json(a.api_rclone_update(body))
+
+        # ---- bot-sync version / self-update ----
+        if path == "/api/system/botsync" and method == "GET":
+            return self._send_json(a.api_botsync_status())
+        if path == "/api/system/botsync/check" and method == "POST":
+            return self._send_json(a.api_botsync_check())
+        if path == "/api/system/botsync/update" and method == "POST":
+            return self._send_json(a.api_botsync_update(body))
 
         # ---- projects ----
         if path == "/api/projects" and method == "GET":
