@@ -23,13 +23,16 @@ from __future__ import annotations
 import base64
 import collections
 import datetime
+import glob
 import hashlib
 import hmac
 import json
 import logging
 import logging.handlers
+import math
 import os
 import platform
+import random
 import re
 import secrets
 import shlex
@@ -51,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.11"
+VERSION = "0.7.12"
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"
@@ -121,6 +124,19 @@ DEFAULT_STATE: Dict[str, Any] = {
     "notifications": {
         "channels": {},   # id -> {kind, label, config, events, min_severity, enabled, last_send, last_error}
         "events": [],     # ring buffer of recent events (capped)
+        # Cross-platform health-monitor thresholds. When any sample exceeds
+        # the configured limit for at least sustain_secs, a single
+        # system.health_warning event is emitted (cooldown_secs between
+        # repeats so we don't spam webhooks). All percentages are 0–100.
+        "health_thresholds": {
+            "enabled": True,
+            "cpu_load_pct": 90,
+            "mem_used_pct": 90,
+            "swap_used_pct": 80,
+            "cpu_temp_c": 80,
+            "sustain_secs": 60,
+            "cooldown_secs": 600,
+        },
     },
     "rclone_status": {
         # Populated by App._update_check_loop. Surfaced via /api/state and the UI banner.
@@ -2610,6 +2626,126 @@ def _rclone_preexec() -> None:
         pass
 
 
+def _read_cpu_temp_c() -> Tuple[Optional[float], Optional[str]]:
+    """Best-effort cross-platform CPU temperature (Celsius) and source label.
+
+    Order of preference (each step swallows errors and falls through):
+      1. Linux/OpenWrt: /sys/class/thermal/thermal_zone*/temp — picks the
+         hottest CPU/SoC zone (filtered by type if available).
+      2. Linux: /sys/class/hwmon/hwmon*/temp*_input named coretemp / k10temp /
+         zenpower / cpu_thermal.
+      3. Linux generic: any hwmon temp*_input (e.g. ath10k_hwmon on
+         GL-iNet routers — the wifi chip is on the same die / is the
+         best thermal proxy available).
+      4. macOS: powermetrics is root-only; we just skip and let user know.
+      5. Windows: ROOT\\WMI MSAcpi_ThermalZoneTemperature (works on most
+         laptops/desktops; some boards expose nothing without vendor SDKs).
+      6. Mock mode: returns a synthetic value that drifts a bit so the UI
+         can be exercised offline.
+    Returns (temp_c, source_label) or (None, None) when no probe succeeded.
+    """
+    if IS_MOCK:
+        # Drift between 38–62 °C so the threshold UI is testable.
+        base = 45.0 + 8.0 * math.sin(time.time() / 30.0)
+        return (round(base + random.uniform(-2.0, 2.0), 1), "mock")
+    # ---- Linux thermal_zone ----
+    try:
+        zones = sorted(glob.glob("/sys/class/thermal/thermal_zone*"))
+        best: Optional[float] = None
+        best_type: Optional[str] = None
+        for z in zones:
+            try:
+                with open(os.path.join(z, "type")) as f:
+                    ztype = f.read().strip().lower()
+            except Exception:
+                ztype = ""
+            try:
+                with open(os.path.join(z, "temp")) as f:
+                    raw = int(f.read().strip())
+            except Exception:
+                continue
+            # Kernel exposes millidegrees; some embedded SoCs use degrees
+            # already — anything < 200 is degrees, anything else is mC.
+            t = raw / 1000.0 if abs(raw) >= 200 else float(raw)
+            if t <= 0 or t > 150:
+                continue
+            if best is None or t > best:
+                best = t
+                best_type = ztype or "thermal_zone"
+        if best is not None:
+            return (round(best, 1), "thermal_zone:" + (best_type or ""))
+    except Exception:
+        pass
+    # ---- Linux hwmon (named CPU sensors first, then any) ----
+    try:
+        hw_entries: List[Tuple[str, str]] = []  # (name, path)
+        for hw in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+            try:
+                with open(os.path.join(hw, "name")) as f:
+                    name = f.read().strip().lower()
+            except Exception:
+                name = ""
+            hw_entries.append((name, hw))
+        # Pass 1: known CPU sensor names.
+        for name, hw in hw_entries:
+            if name not in ("coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-thermal"):
+                continue
+            for tf in sorted(glob.glob(os.path.join(hw, "temp*_input"))):
+                try:
+                    with open(tf) as f:
+                        raw = int(f.read().strip())
+                    t = raw / 1000.0 if abs(raw) >= 200 else float(raw)
+                    if 0 < t <= 150:
+                        return (round(t, 1), "hwmon:" + name)
+                except Exception:
+                    continue
+        # Pass 2: any readable hwmon (best-effort thermal proxy).
+        best_t: Optional[float] = None
+        best_name: Optional[str] = None
+        for name, hw in hw_entries:
+            for tf in sorted(glob.glob(os.path.join(hw, "temp*_input"))):
+                try:
+                    with open(tf) as f:
+                        raw = int(f.read().strip())
+                    t = raw / 1000.0 if abs(raw) >= 200 else float(raw)
+                    if 0 < t <= 150 and (best_t is None or t > best_t):
+                        best_t = t
+                        best_name = name or "hwmon"
+                except Exception:
+                    continue
+        if best_t is not None:
+            return (round(best_t, 1), "hwmon:" + (best_name or ""))
+    except Exception:
+        pass
+    # ---- Windows ----
+    if IS_WINDOWS:
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop).CurrentTemperature"],
+                stderr=subprocess.DEVNULL, timeout=4,
+            ).decode().strip().splitlines()
+            vals = []
+            for line in out:
+                line = line.strip()
+                if line.isdigit():
+                    # Tenths of Kelvin
+                    vals.append(int(line) / 10.0 - 273.15)
+            if vals:
+                return (round(max(vals), 1), "wmi")
+        except Exception:
+            pass
+    return (None, None)
+
+
+def _cpu_count() -> int:
+    try:
+        n = os.cpu_count() or 1
+        return max(1, int(n))
+    except Exception:
+        return 1
+
+
 def system_info() -> Dict[str, Any]:
     info: Dict[str, Any] = {"hostname": socket.gethostname(),
                             "platform": platform.platform(), "version": VERSION,
@@ -2671,6 +2807,35 @@ def system_info() -> Dict[str, Any]:
             info["root_free"] = st.free
     except Exception:
         pass
+    # Derived metrics used by the UI status pages and the health-monitor.
+    try:
+        info["cpu_count"] = _cpu_count()
+        la = info.get("loadavg") or ["0", "0", "0"]
+        try:
+            la1 = float(la[0])
+        except Exception:
+            la1 = 0.0
+        info["cpu_load_pct"] = round(min(999.0, (la1 / max(1, info["cpu_count"])) * 100.0), 1)
+    except Exception:
+        info["cpu_count"] = 1
+        info["cpu_load_pct"] = 0.0
+    try:
+        mt = float(info.get("mem_total") or 0)
+        mf = float(info.get("mem_free") or 0)
+        info["mem_used_pct"] = round(((mt - mf) / mt) * 100.0, 1) if mt > 0 else 0.0
+    except Exception:
+        info["mem_used_pct"] = 0.0
+    try:
+        st_total = float(info.get("swap_total") or 0)
+        st_used = float(info.get("swap_used") or 0)
+        info["swap_used_pct"] = round((st_used / st_total) * 100.0, 1) if st_total > 0 else 0.0
+    except Exception:
+        info["swap_used_pct"] = 0.0
+    try:
+        info["cpu_temp_c"], info["cpu_temp_source"] = _read_cpu_temp_c()
+    except Exception:
+        info["cpu_temp_c"] = None
+        info["cpu_temp_source"] = None
     return info
 
 
@@ -3333,6 +3498,10 @@ class App:
                 self._purge_due()
             except Exception:
                 logger.exception("purge tick")
+            try:
+                self._health_check_tick()
+            except Exception:
+                logger.exception("health check tick")
             if self._stop_event.wait(self._AUTOSYNC_TICK):
                 return
 
@@ -4349,6 +4518,118 @@ class App:
             self.store.update(_u)
         except Exception:
             logger.exception("project record drop failed: %s", pid)
+
+    # ---- health monitor ----
+
+    def _health_check_tick(self) -> None:
+        """Sample CPU load %, mem %, swap %, CPU temp; fire health_warning.
+
+        State machine per metric:
+          - When a sample first exceeds its threshold, record `since` ts.
+          - When it stays over threshold for `sustain_secs`, emit one
+            event and stamp `last_alert`. Subsequent over-threshold
+            samples are silenced until `cooldown_secs` elapses.
+          - When a sample drops back under threshold, clear `since`.
+        Per-metric state is kept in-memory only (resets at restart).
+        """
+        if not hasattr(self, "_health_state"):
+            self._health_state: Dict[str, Dict[str, float]] = {}
+        s = self.store.get()
+        cfg = ((s.get("notifications") or {}).get("health_thresholds") or {})
+        if not cfg.get("enabled", True):
+            return
+        sustain = max(0, int(cfg.get("sustain_secs", 60) or 0))
+        cooldown = max(60, int(cfg.get("cooldown_secs", 600) or 600))
+        info = system_info()
+        now = time.time()
+        metrics = [
+            ("cpu_load_pct", info.get("cpu_load_pct"), float(cfg.get("cpu_load_pct", 90)), "CPU load",
+             lambda v: f"{v:.0f}%"),
+            ("mem_used_pct", info.get("mem_used_pct"), float(cfg.get("mem_used_pct", 90)), "Memory used",
+             lambda v: f"{v:.0f}%"),
+            ("swap_used_pct", info.get("swap_used_pct"), float(cfg.get("swap_used_pct", 80)), "Swap used",
+             lambda v: f"{v:.0f}%"),
+            ("cpu_temp_c", info.get("cpu_temp_c"), float(cfg.get("cpu_temp_c", 80)), "CPU temperature",
+             lambda v: f"{v:.1f} \u00b0C"),
+        ]
+        triggered: List[Tuple[str, str, float, float]] = []  # (key, label, value, threshold)
+        for key, value, threshold, label, _fmt in metrics:
+            st = self._health_state.setdefault(key, {"since": 0.0, "last_alert": 0.0})
+            if value is None:
+                st["since"] = 0.0
+                continue
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                continue
+            if v >= threshold:
+                if st["since"] == 0.0:
+                    st["since"] = now
+                # Sustained long enough?
+                if (now - st["since"]) >= sustain and (now - st["last_alert"]) >= cooldown:
+                    triggered.append((key, label, v, threshold))
+                    st["last_alert"] = now
+            else:
+                st["since"] = 0.0
+        if not triggered:
+            return
+        # Single combined event so a webhook hit covers everything currently
+        # over threshold instead of N back-to-back posts.
+        parts = []
+        fields: Dict[str, Any] = {}
+        for key, label, v, thr in triggered:
+            unit = "\u00b0C" if key == "cpu_temp_c" else "%"
+            parts.append(f"{label} {v:.1f}{unit} (\u2265 {thr:.0f}{unit})")
+            fields[key] = v
+            fields[key + "_threshold"] = thr
+        msg = "Health threshold exceeded: " + "; ".join(parts)
+        try:
+            self.notify.emit("system.health_warning", msg, **fields)
+        except Exception:
+            logger.exception("emit health_warning failed")
+
+    def api_health_get(self) -> Dict[str, Any]:
+        s = self.store.get()
+        cfg = ((s.get("notifications") or {}).get("health_thresholds") or {})
+        info = system_info()
+        return {
+            "ok": True,
+            "thresholds": cfg,
+            "current": {
+                "cpu_load_pct": info.get("cpu_load_pct"),
+                "mem_used_pct": info.get("mem_used_pct"),
+                "swap_used_pct": info.get("swap_used_pct"),
+                "cpu_temp_c": info.get("cpu_temp_c"),
+                "cpu_count": info.get("cpu_count"),
+            },
+        }
+
+    def api_health_patch(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        ALLOWED = {"enabled", "cpu_load_pct", "mem_used_pct", "swap_used_pct",
+                   "cpu_temp_c", "sustain_secs", "cooldown_secs"}
+        clean: Dict[str, Any] = {}
+        for k, v in (body or {}).items():
+            if k not in ALLOWED:
+                continue
+            if k == "enabled":
+                clean[k] = bool(v)
+            else:
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": f"{k}: must be a number"}
+                if fv < 0:
+                    return {"ok": False, "error": f"{k}: must be >= 0"}
+                if k in ("sustain_secs", "cooldown_secs"):
+                    clean[k] = int(fv)
+                else:
+                    clean[k] = round(fv, 1)
+        def _u(d: Dict[str, Any]) -> None:
+            d.setdefault("notifications", {}).setdefault("health_thresholds", {}).update(clean)
+        self.store.update(_u)
+        # Reset the per-metric state so a fresh threshold takes effect immediately.
+        self._health_state = {}
+        return self.api_health_get()
 
     # ---- downloads ----
 
@@ -5833,6 +6114,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/notifications/events" and method == "GET":
             tail = int((qs.get("tail") or ["100"])[0])
             return self._send_json(a.api_notify_events(tail))
+        if path == "/api/notifications/health" and method == "GET":
+            return self._send_json(a.api_health_get())
+        if path == "/api/notifications/health" and method == "PATCH":
+            return self._send_json(a.api_health_patch(body))
 
         self._send_json({"ok": False, "error": "not found"}, 404)
 

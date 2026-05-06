@@ -1486,7 +1486,56 @@ const renderNotifications = () => {
       el('span', {}, e.message + (fields ? ` · ${fields}` : '')),
     ));
   });
+  _renderHealthThresholds();
 };
+
+// Health alert thresholds: pull current settings + readings from STATE
+// (api_state already includes notifications.health_thresholds and
+// system.{cpu_load_pct,mem_used_pct,swap_used_pct,cpu_temp_c}).
+const _renderHealthThresholds = () => {
+  const cfg = ((STATE.notifications || {}).health_thresholds) || {};
+  const sys = STATE.system || {};
+  const setVal = (id, v, fb) => { const n = $(id); if (n) n.value = (v == null ? fb : v); };
+  const en = $('#htEnabled'); if (en) en.checked = cfg.enabled !== false;
+  setVal('#htCpuLoadPct', cfg.cpu_load_pct, 90);
+  setVal('#htMemUsedPct', cfg.mem_used_pct, 90);
+  setVal('#htSwapUsedPct', cfg.swap_used_pct, 80);
+  setVal('#htCpuTempC', cfg.cpu_temp_c, 80);
+  setVal('#htSustainSecs', cfg.sustain_secs, 60);
+  setVal('#htCooldownSecs', cfg.cooldown_secs, 600);
+  const cur = $('#htCurrent');
+  if (cur) {
+    const fmt = (v, suffix) => v == null ? 'n/a' : Number(v).toFixed(1) + suffix;
+    cur.textContent = 'Now: '
+      + 'CPU load ' + fmt(sys.cpu_load_pct, '%')
+      + ' · Mem ' + fmt(sys.mem_used_pct, '%')
+      + ' · Swap ' + fmt(sys.swap_used_pct, '%')
+      + ' · Temp ' + fmt(sys.cpu_temp_c, ' \u00b0C')
+      + (sys.cpu_count ? ' · ' + sys.cpu_count + ' core(s)' : '');
+  }
+};
+$('#htSave') && $('#htSave').addEventListener('click', async () => {
+  const body = {
+    enabled: $('#htEnabled').checked,
+    cpu_load_pct: parseFloat($('#htCpuLoadPct').value),
+    mem_used_pct: parseFloat($('#htMemUsedPct').value),
+    swap_used_pct: parseFloat($('#htSwapUsedPct').value),
+    cpu_temp_c: parseFloat($('#htCpuTempC').value),
+    sustain_secs: parseInt($('#htSustainSecs').value, 10),
+    cooldown_secs: parseInt($('#htCooldownSecs').value, 10),
+  };
+  const r = await api('/api/notifications/health', { method: 'PATCH', body });
+  const msg = $('#htMsg');
+  if (r && r.ok !== false) {
+    if (msg) msg.textContent = '\u2714 Thresholds saved.';
+    toast('Health thresholds saved');
+    refreshState();
+  } else {
+    if (msg) msg.textContent = '\u2718 ' + ((r && r.error) || 'save failed');
+    toast((r && r.error) || 'Save failed', true);
+  }
+});
+$('#htRefresh') && $('#htRefresh').addEventListener('click', () => refreshState());
 
 const ntKindFields = {
   discord: [{ k: 'url', label: 'Webhook URL', placeholder: 'https://discord.com/api/webhooks/...' }],
@@ -1661,10 +1710,18 @@ const testChannel = async (cid) => {
 };
 
 // ----- SYSTEM -----
+const _fmtTemp = (c) => (c == null ? 'unknown (no probe)' : (Number(c).toFixed(1) + '\u00a0\u00b0C'));
+const _fmtPct = (p) => (p == null ? '\u2014' : (Number(p).toFixed(1) + '%'));
+const _flagOver = (val, thr) => {
+  if (val == null || thr == null) return '';
+  return Number(val) >= Number(thr) ? ' \u26a0' : '';
+};
 const renderSystem = () => {
   const s = STATE.system || {};
+  const thr = ((STATE.notifications || {}).health_thresholds) || {};
   $('#systemPanel').innerHTML = '';
   const grid = el('div', { class: 'grid' });
+  const memUsed = (s.mem_total || 0) - (s.mem_free || 0);
   const rows = [
     ['Version', s.version],
     ['Mock mode', s.mock ? 'YES' : 'no'],
@@ -1673,14 +1730,17 @@ const renderSystem = () => {
     ['Platform', s.platform],
     ['Root', s.root],
     ['Root free', human(s.root_free) + ' / ' + human(s.root_total)],
-    ['Memory', human(s.mem_free) + ' free / ' + human(s.mem_total)],
+    ['Memory', human(memUsed) + ' used / ' + human(s.mem_total) + ' (' + _fmtPct(s.mem_used_pct) + ')' + _flagOver(s.mem_used_pct, thr.mem_used_pct)],
     ['Swap', s.swap_active
-      ? (human(s.swap_used) + ' used / ' + human(s.swap_total)
+      ? (human(s.swap_used) + ' used / ' + human(s.swap_total) + ' (' + _fmtPct(s.swap_used_pct) + ')'
          + ((s.swap_devices && s.swap_devices.length)
             ? ' (' + s.swap_devices.map(d => d.device).join(', ') + ')'
-            : ''))
+            : '')
+         + _flagOver(s.swap_used_pct, thr.swap_used_pct))
       : 'disabled'],
-    ['Loadavg', (s.loadavg || []).join(' ')],
+    ['CPU load', (s.loadavg || []).join(' ') + (s.cpu_count ? ' \u00b7 ' + s.cpu_count + ' core' + (s.cpu_count === 1 ? '' : 's') : '')
+        + ' \u00b7 ' + _fmtPct(s.cpu_load_pct) + _flagOver(s.cpu_load_pct, thr.cpu_load_pct)],
+    ['CPU temperature', _fmtTemp(s.cpu_temp_c) + (s.cpu_temp_source ? ' \u00b7 ' + s.cpu_temp_source : '') + _flagOver(s.cpu_temp_c, thr.cpu_temp_c)],
     ['Uptime', s.uptime ? Math.floor(s.uptime / 3600) + ' h' : '?'],
   ];
   rows.forEach(([k, v]) => grid.append(el('div', { class: 'k' }, k), el('div', {}, String(v ?? ''))));
@@ -1932,6 +1992,17 @@ const renderDashboard = () => {
   memBits.push(el('div', { class: 'dash-row' },
     el('span', { class: 'lbl' }, 'Load avg'),
     el('span', { class: 'val' }, (sys.loadavg || []).join(' ') || '—')));
+  if (sys.cpu_temp_c != null || sys.cpu_load_pct != null) {
+    const thr = ((STATE.notifications || {}).health_thresholds) || {};
+    const tempStr = sys.cpu_temp_c == null ? 'n/a' : (Number(sys.cpu_temp_c).toFixed(1) + ' \u00b0C');
+    const loadStr = sys.cpu_load_pct == null ? 'n/a' : (Number(sys.cpu_load_pct).toFixed(0) + '%');
+    const tempHot = sys.cpu_temp_c != null && thr.cpu_temp_c != null && Number(sys.cpu_temp_c) >= Number(thr.cpu_temp_c);
+    const loadHot = sys.cpu_load_pct != null && thr.cpu_load_pct != null && Number(sys.cpu_load_pct) >= Number(thr.cpu_load_pct);
+    memBits.push(el('div', { class: 'dash-row' },
+      el('span', { class: 'lbl' }, 'CPU'),
+      el('span', { class: 'val', style: (loadHot || tempHot) ? 'color:var(--warn)' : '' },
+        loadStr + ' \u00b7 ' + tempStr + ((loadHot || tempHot) ? ' \u26a0' : ''))));
+  }
   root.append(_panel('🧠 Memory', memBits, { click: () => _switchTab('system') }));
 
   // -- Accounts panel --
@@ -2249,6 +2320,7 @@ const renderFooterStats = () => {
     `RAM ${ramFree} / ${ramTot}` +
     `  ·  Disk ${dskFree} / ${dskTot}` +
     `  ·  Load ${load}` +
+    (s.cpu_temp_c != null ? `  ·  CPU ${Number(s.cpu_temp_c).toFixed(0)}\u00a0\u00b0C` : '') +
     `  ·  Jobs ${active} running` + (queued ? ` (${queued} queued)` : '');
 };
 

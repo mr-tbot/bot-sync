@@ -441,6 +441,25 @@
       <thead><tr><th></th><th>Label</th><th>Kind</th><th>Min sev</th><th>Events</th><th>Last send</th><th>Last error</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+    <h3>🌡️ Health alert thresholds</h3>
+    <p class="hint">When any value below stays above its threshold for the sustain period, a single <code>system.health_warning</code> event is emitted (and forwarded to all enabled webhook channels). After firing, the same metric is silenced for the cooldown period to avoid spam.</p>
+    <div class="panel" id="healthThresholdsPanel">
+      <label class="checkbox"><input type="checkbox" id="htEnabled" checked> Enable health monitoring</label>
+      <div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">
+        <label>CPU load (% of all cores) <input type="number" id="htCpuLoadPct" min="0" max="500" step="1" value="90"></label>
+        <label>Memory used (%) <input type="number" id="htMemUsedPct" min="0" max="100" step="1" value="90"></label>
+        <label>Swap used (%) <input type="number" id="htSwapUsedPct" min="0" max="100" step="1" value="80"></label>
+        <label>CPU temperature (°C) <input type="number" id="htCpuTempC" min="0" max="150" step="1" value="80"></label>
+        <label>Sustain duration (seconds) <input type="number" id="htSustainSecs" min="0" step="5" value="60"></label>
+        <label>Cooldown between alerts (seconds) <input type="number" id="htCooldownSecs" min="60" step="30" value="600"></label>
+      </div>
+      <p class="hint" id="htCurrent" style="margin-top:6px"></p>
+      <div class="row-end">
+        <button class="btn-secondary" id="htRefresh">Refresh</button>
+        <button class="btn-primary" id="htSave">Save thresholds</button>
+      </div>
+      <p class="hint" id="htMsg"></p>
+    </div>
     <h3>Recent events</h3>
     <div id="eventLog" class="panel"></div>
   </section>
