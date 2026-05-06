@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.13"
+VERSION = "0.7.14"
 IS_MOCK = os.environ.get("BOTSYNC_MOCK") == "1"
 IS_DEBUG = os.environ.get("BOTSYNC_DEBUG") == "1"
 IS_WINDOWS = platform.system() == "Windows"

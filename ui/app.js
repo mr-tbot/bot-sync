@@ -167,9 +167,14 @@ const maybeShowFirstRun = () => {
 };
 
 // ----- tab switching -----
+// On phone widths the tab strip becomes a horizontal scroll row, so when
+// the user taps a partially-visible tab (or a sub-panel jumps them to a
+// different tab via _switchTab) we make sure the freshly activated tab
+// scrolls into view rather than staying clipped at the edge.
 $$('.tab').forEach(t => t.addEventListener('click', () => {
   $$('.tab').forEach(x => x.classList.toggle('active', x === t));
   $$('.tabpane').forEach(p => p.classList.toggle('active', p.id === 'tab-' + t.dataset.tab));
+  try { t.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' }); } catch (_) {}
 }));
 
 // ----- DRIVES -----

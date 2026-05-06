@@ -364,3 +364,136 @@ dialog.modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end
 .footer-stats { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .footer-stats.low-ram { color: var(--warn, #e5a200); font-weight: 600; }
 
+
+/* ============================================================
+   Responsive layout
+   -------------------------------------------------------------
+   The top tab bar has 13 buttons that easily overflow on
+   narrow screens. Rather than wrapping (which would push the
+   page content down by 3+ rows on a phone) we let it scroll
+   horizontally with snap points so each tab feels like a
+   "page" the user can flick through. The brand and the sign
+   out button stay anchored above the scrolling strip so users
+   never lose their place.
+
+   Breakpoints:
+     <= 1100px  – tab bar becomes a horizontal scroll strip,
+                  paddings tighten a touch.
+     <= 720px   – topbar stacks (brand row, then nav row),
+                  main padding shrinks, dialog widths flex,
+                  tables get a horizontal scroll wrapper, and
+                  the dashboard / cards grids drop to a single
+                  column when there really is not enough room.
+   ============================================================ */
+
+/* The tab strip should always be touch-scrollable (mouse users on
+   wide screens still see the full strip with no scrollbar visible). */
+.tabs {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 1100px) {
+  .topbar {
+    gap: 10px;
+    padding: 8px 12px;
+  }
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    /* Hide the bottom border-shadow gap so scrollbar does not
+       look detached. */
+    padding-bottom: 2px;
+  }
+  .tab {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+    white-space: nowrap;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .status { display: none; }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    align-items: center;
+  }
+  .brand { font-size: 14px; flex: 1; min-width: 0; }
+  .brand .logo { font-size: 16px; }
+  /* Push the nav onto its own full-width row below the brand. */
+  .tabs {
+    order: 3;
+    flex-basis: 100%;
+    margin: 4px -10px 0;
+    padding: 4px 10px 6px;
+    gap: 2px;
+    border-top: 1px solid var(--border);
+  }
+  .tab { padding: 6px 9px; font-size: 12.5px; }
+  #logoutBtn { font-size: 12px; padding: 2px 4px; }
+
+  main { padding: 12px 12px 50px; }
+  h2 { font-size: 18px; }
+
+  /* Most of the page is grids of cards. Loosen the minimum so
+     they collapse to a single column at phone widths. */
+  .cards,
+  .dash-grid,
+  .perf-grid,
+  .reliability-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  #ntEventList { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+
+  /* Keep the row-between bar from blowing out when a label and a
+     stack of action buttons both want their own line. */
+  .row-between { flex-wrap: wrap; gap: 8px; }
+  .row-between > div { flex-wrap: wrap; }
+
+  /* Let panels scroll horizontally on phones so tables that exceed
+     the viewport don't blow out the layout. */
+  .panel { overflow-x: auto; }
+  table.data th,
+  table.data td { padding: 7px 6px; font-size: 12px; }
+  .actions-cell { gap: 2px; }
+  .actions-cell .btn-secondary,
+  .actions-cell .btn-primary,
+  .actions-cell .btn-danger { padding: 4px 8px; font-size: 12px; }
+
+  /* Event log uses fixed-pixel columns that don't fit on a phone.
+     Switch to a stacked layout: timestamp + level on one row,
+     source + message on the next. */
+  #eventLog .ev {
+    grid-template-columns: max-content max-content;
+    grid-template-areas:
+      "t l"
+      "s s"
+      "m m";
+    row-gap: 2px;
+  }
+  #eventLog .ev > :nth-child(1) { grid-area: t; }
+  #eventLog .ev > :nth-child(2) { grid-area: l; }
+  #eventLog .ev > :nth-child(3) { grid-area: s; color: var(--muted); font-size: 11px; }
+  #eventLog .ev > :nth-child(4) { grid-area: m; }
+
+  /* Modals and the wizard should fill the screen on phones. */
+  dialog.modal,
+  dialog.welcome { width: 96%; max-width: none; padding: 18px 18px; }
+  .wizard { margin: 8px auto; }
+  .wizard .step { padding: 14px 14px; }
+
+  .sync-log-detail { max-width: 180px; }
+}
+
+@media (max-width: 420px) {
+  .brand { font-size: 13px; }
+  .tab { padding: 6px 7px; font-size: 12px; }
+  main { padding: 10px 8px 40px; }
+}
+
