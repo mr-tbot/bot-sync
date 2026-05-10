@@ -1,4 +1,4 @@
-# 🤖 BOT-SYNC — Install Instructions (v0.7.11)
+# 🤖 BOT-SYNC — Install Instructions (v0.7.21)
 
 
 

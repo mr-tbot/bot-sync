@@ -1929,7 +1929,7 @@ const renderRcloneStatus = () => {
 };
 
 const renderBotsyncStatus = () => {
-  const root = $('#botsyncUpdatePanel'); if (!root) return;
+  const root = $('#botsyncPanel'); if (!root) return;
   const bs = STATE.bot_sync_status || {};
   root.innerHTML = '';
   const grid = el('div', { class: 'grid' });
@@ -2747,7 +2747,130 @@ rule + include, and alias IP. The USB drive is left untouched.</p>
 
 <h3>Changelog</h3>
 <dl>
-  <dt><strong>v0.7.10</strong> (current)</dt>
+  <dt><strong>v0.7.21</strong> (current)</dt>
+  <dd>
+    <strong>System tab \u2014 BOT-SYNC daemon panel fixed.</strong> The
+    self-update widget on <em>\ud83d\udee0\ufe0f System</em> was rendering into a
+    stale element id and silently came up empty. Render target
+    corrected; installed/latest version, last-checked timestamp and the
+    <em>Check for updates</em> / <em>Update now</em> buttons now
+    populate as designed. Docs (README, <code>INSTRUCTIONS.md</code>, this
+    Help tab) brought back in sync with releases since v0.7.10.
+  </dd>
+  <dt><strong>v0.7.20</strong></dt>
+  <dd>
+    <strong>Init script picks the primary drive across all mounts.</strong>
+    OpenWrt's <code>/etc/init.d/botsync</code> now does a two-pass scan
+    of every mount under <code>/mnt/sync</code> and
+    <code>/tmp/mountd</code> for <code>.botsync_marker</code> files: pass
+    1 prefers any drive whose marker has <code>"primary": true</code>,
+    only falling back to the first marker of any kind. Prevents the
+    daemon from picking up a secondary drive (and "losing" config) when
+    USB device names shuffle on reboot.
+  </dd>
+  <dt><strong>v0.7.19</strong></dt>
+  <dd>
+    <strong>Wait for internet at boot before first account/update
+    checks.</strong> Cold boots no longer fire a wave of <em>"account
+    unreachable"</em> Discord notifications while the WAN/repeater is
+    still associating. A new TCP-only probe gates the health and update
+    loops for up to 600\u00a0s.
+  </dd>
+  <dt><strong>v0.7.18</strong></dt>
+  <dd>
+    <strong>bot-sync self-update notifier and updater.</strong> Daemon
+    polls GitHub once per 24\u00a0h for new commits to
+    <code>mr-tbot/bot-sync</code> and surfaces an alert banner plus the
+    <em>BOT-SYNC daemon</em> panel on this System tab with <em>View on
+    GitHub</em>, <em>Check now</em> and <em>Update now</em> buttons.
+    <em>Update now</em> runs <code>install/update.sh</code> detached
+    (with an inline tarball-bootstrap fallback), also runs <code>rclone
+    selfupdate</code> when rclone is on <code>PATH</code>, and restarts
+    the daemon. New events:
+    <code>botsync.update_available</code>/<code>installed</code>/<code>failed</code>.
+  </dd>
+  <dt><strong>v0.7.17</strong></dt>
+  <dd>
+    <strong>Donation + issue-reporting links.</strong> Footer gains a
+    \ud83d\udc9b <em>Donate</em> (PayPal) and \ud83d\udc1b <em>Report issue</em>
+    (GitHub) link next to the existing MR-TBOT credit. This Help tab
+    gets a dedicated support callout panel near the top with the same
+    two links styled as primary/secondary buttons.
+  </dd>
+  <dt><strong>v0.7.16</strong></dt>
+  <dd>
+    <strong>Per-entry and per-project sync priority.</strong>
+    High/normal/low priority controls the order jobs come out of the
+    worker queue when several are queued at once. Lower-priority jobs
+    still run; they yield concurrency slots to higher-priority work
+    first. Per-entry priority defaults to <em>auto</em> (inherits from
+    the entry's primary project, then highest tagged project, then
+    <em>normal</em>). Entry-edit modal and Projects tab edit form gain
+    a <em>Priority</em> select; the project summary shows a
+    \ud83d\udd25/\ud83d\udca4 pill.
+  </dd>
+  <dt><strong>v0.7.15</strong></dt>
+  <dd>
+    <strong>Skip <em>completed</em> notifications for no-op repeat
+    syncs.</strong> Once an entry has completed at least one successful
+    sync, per-run <code>job.started</code>/<code>job.completed</code>
+    events are suppressed when the run transferred zero files and zero
+    bytes. Failures and cancellations always notify; the first-ever
+    sync of a new entry still fires both events. Stops Discord from
+    being spammed every schedule tick by polling jobs against an
+    unchanged remote folder.
+  </dd>
+  <dt><strong>v0.7.14</strong></dt>
+  <dd>
+    <strong>Responsive UI \u2014 mobile-friendly tab bar and
+    layouts.</strong> The 13-button top tab strip is now a
+    touch-scrollable single-row strip with scroll-snap; the brand and
+    sign-out button stay anchored above on narrow screens. Three new
+    breakpoints (1100\u00a0px / 720\u00a0px / 420\u00a0px) progressively
+    stack the topbar, drop dashboard grids to a single column, and let
+    panels scroll horizontally for wide tables.
+  </dd>
+  <dt><strong>v0.7.13</strong></dt>
+  <dd>
+    <strong>Project list refresh fix + dedicated Projects tab.</strong>
+    Bug fix: the inline <em>+ New project</em> button on the
+    Downloads/Uploads add panel now repopulates every
+    project-related <code>&lt;select&gt;</code> on the page and
+    preselects the new id. New \ud83d\uddc2\ufe0f <strong>Projects</strong> tab
+    with search, expand/collapse-all and per-project cards
+    (members, slug, schedule, auto-delete, rename, auto-sync
+    schedule preset). New
+    <code>POST /api/projects/&lt;pid&gt;/sync</code> endpoint queues
+    every active download/upload tagged with that project.
+  </dd>
+  <dt><strong>v0.7.12</strong></dt>
+  <dd>
+    <strong>Cross-platform CPU temp + health threshold alerts.</strong>
+    System/Dashboard tabs (and the footer) now show CPU temperature,
+    CPU load %, memory %, and swap % from a cross-platform probe (Linux
+    <code>/sys/class/thermal</code> + <code>/sys/class/hwmon</code>
+    including <code>ath10k_hwmon</code> on GL-iNet routers as a thermal
+    proxy; Windows WMI; macOS skipped). New <em>Health Alert
+    Thresholds</em> panel under \ud83d\udd14 Notifications with knobs for
+    CPU load %, memory %, swap %, CPU\u00a0\u00b0C, sustain seconds and
+    cooldown seconds; emits a combined
+    <code>system.health_warning</code> event with per-metric cooldown
+    so the channel doesn't get spammed.
+  </dd>
+  <dt><strong>v0.7.11</strong></dt>
+  <dd>
+    <strong>Multi-project tagging + auto-purge.</strong> Downloads and
+    uploads now carry an ordered list of project ids; the primary still
+    controls the on-disk path and each extra project is treated as a
+    mirror tag (post-sync <code>shutil.copytree</code> into the tagged
+    project's folder on the same drive). New <em>Additional projects</em>
+    picker on the add/edit dialogs. Auto-purge: every entry and project
+    gains an <code>auto_delete_at</code> field; expired entries (and
+    cascaded mirrors) are removed on the autosync tick. README/
+    <code>INSTRUCTIONS.md</code> also gained the <em>Heads-up before you
+    start</em> disclaimer + skill prerequisites for non-router targets.
+  </dd>
+  <dt><strong>v0.7.10</strong></dt>
   <dd>
     <strong>Schedule column on Downloads & Uploads.</strong> Each row now
     has a Schedule cell next to <em>Last sync</em> showing the configured

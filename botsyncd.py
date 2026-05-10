@@ -55,7 +55,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.20"
+VERSION = "0.7.21"
 # GitHub repo used by the in-app update notifier. Compared against the latest
 # commit on the default branch to surface a banner when a new build is out.
 UPSTREAM_REPO = "mr-tbot/bot-sync"

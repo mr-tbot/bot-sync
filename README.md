@@ -57,7 +57,7 @@ optional firewall include for the friendly `http://bot.sync/` hostname.
 
 
 
-**Status:** v0.7.11 — deployed to GL-A1300, running off USB, reachable at
+**Status:** v0.7.21 — deployed to GL-A1300, running off USB, reachable at
 
 
 `http://bot.sync/` (and `http://<router-ip>:8585/`). In-app guide now lives
@@ -1317,7 +1317,502 @@ future version does not require wiping state.
 
 
 
-### v0.7.10 (current — initial public release)
+### v0.7.21 (current)
+
+
+
+
+
+- **System tab — BOT-SYNC daemon panel fixed.** The self-update widget on
+
+
+  *🛠️ System* was rendering into a stale element id (`#botsyncUpdatePanel`)
+
+
+  while the page actually exposes `#botsyncPanel`, so the panel was
+
+
+  silently empty. Render target corrected; the installed/latest version,
+
+
+  last-checked timestamp, *Check for updates* and *Update now* buttons now
+
+
+  populate as designed. Docs (README, `INSTRUCTIONS.md`, in-app Help)
+
+
+  brought back in sync after a long stretch of release-only commits.
+
+
+
+
+
+### v0.7.20
+
+
+
+
+
+- **Init script picks the primary drive across all mounts.** OpenWrt's
+
+
+  `/etc/init.d/botsync` now does a two-pass scan of every mount under
+
+
+  `/mnt/sync` and `/tmp/mountd` for `.botsync_marker` files: pass 1
+
+
+  prefers any drive whose marker has `"primary": true`, only falling
+
+
+  back to the first marker of any kind. Prevents the daemon from
+
+
+  picking up an old / secondary drive (and "losing" config) when USB
+
+
+  device names shuffle on reboot (e.g. `sda`↔`sdb`).
+
+
+
+
+
+### v0.7.19
+
+
+
+
+
+- **Wait for internet at boot before first account/update checks.**
+
+
+  Cold boots no longer fire a wave of *“account unreachable”* / update-
+
+
+  check failures into Discord while the WAN or repeater is still
+
+
+  associating. A new TCP-only probe (`api.github.com:443`,
+
+
+  `1.1.1.1:443`, `8.8.8.8:53`) gates `_health_loop` and
+
+
+  `_update_check_loop` for up to 600 s (5 s intervals). Falls back to
+
+
+  plain `time.sleep` when invoked before `_stop_event` exists in
+
+
+  `App.__init__`.
+
+
+
+
+
+### v0.7.18
+
+
+
+
+
+- **bot-sync self-update notifier and updater.** The daemon now polls
+
+
+  `https://api.github.com/repos/mr-tbot/bot-sync/commits/main` once per
+
+
+  24 h on the same loop as the rclone update check. The UI gains an
+
+
+  alert banner plus a *🛠️ System → BOT-SYNC daemon* panel showing
+
+
+  installed vs. latest, with **View on GitHub**, **Check now**, and
+
+
+  **Update now** buttons. *Update now* runs `install/update.sh`
+
+
+  detached (with an inline bootstrap fallback that fetches the GitHub
+
+
+  tarball when the local helper is missing); the script also runs
+
+
+  `rclone selfupdate` when rclone is on `PATH` and restarts the
+
+
+  daemon. New API endpoints: `GET /api/system/botsync`,
+
+
+  `POST /api/system/botsync/check`, `POST /api/system/botsync/update`.
+
+
+  New events: `botsync.update_available` / `installed` / `failed`.
+
+
+  Stale `updating` flags on `bot_sync_status` and `rclone_status` are
+
+
+  cleared on every startup so a daemon killed mid-update doesn't lock
+
+
+  the UI buttons.
+
+
+
+
+
+### v0.7.17
+
+
+
+
+
+- **Donation + issue-reporting links.** Footer gains a *💛 Donate*
+
+
+  (PayPal) and *🐛 Report issue* (GitHub) link next to the existing
+
+
+  MR-TBOT credit. The 📖 Help tab gets a dedicated support callout
+
+
+  panel near the top with the same two links styled as primary /
+
+
+  secondary buttons. README opens with a brief blockquote explaining
+
+
+  what donations fund and linking to PayPal + the issues tracker.
+
+
+
+
+
+### v0.7.16
+
+
+
+
+
+- **Per-entry and per-project sync priority.** High / normal / low
+
+
+  priority controls the order jobs come out of the worker queue when
+
+
+  several are queued at once. Lower-priority jobs still run; they just
+
+
+  yield the per-type and global concurrency slots to higher-priority
+
+
+  work first. Per-project priority lives on the project record
+
+
+  (default *normal*); per-entry priority lives on each download / upload
+
+
+  (*auto* by default). *auto* resolves to the entry's primary project
+
+
+  priority, then to any tagged project's priority (highest wins), then
+
+
+  to *normal*. The entry-edit modal gains a *Priority* select with an
+
+
+  *Inherit from project* option; the Projects tab edit form gains a
+
+
+  *Priority* select and the project summary shows a 🔥/💤 pill.
+
+
+
+
+
+### v0.7.15
+
+
+
+
+
+- **Skip *completed* notifications for no-op repeat syncs.** Once a
+
+
+  download or upload has completed at least one successful sync,
+
+
+  per-run `job.started` and `job.completed` events are suppressed when
+
+
+  the run transferred zero files and zero bytes. Failures and
+
+
+  cancellations always notify regardless. The first-ever sync of a new
+
+
+  entry still fires both events so users get the welcome ping. Stops
+
+
+  Discord from being spammed every schedule tick by polling jobs
+
+
+  against an unchanged remote folder.
+
+
+
+
+
+### v0.7.14
+
+
+
+
+
+- **Responsive UI — mobile-friendly tab bar and layouts.** The 13-button
+
+
+  top tab strip used to overflow horizontally on phones, either getting
+
+
+  clipped or wrapping into multiple rows that pushed the page content
+
+
+  down. The new layout keeps the tabs on a single row but turns it into
+
+
+  a touch-scrollable strip with scroll-snap so each tab feels like a
+
+
+  flickable page; the brand and sign-out button stay anchored above on
+
+
+  narrow screens, and clicking a tab scrolls it into view. Three new
+
+
+  breakpoints in `ui/style.css`: 1100 px / 720 px / 420 px progressively
+
+
+  stack the topbar, drop the dashboard grids to a single column, and
+
+
+  let panels scroll horizontally for wide tables.
+
+
+
+
+
+### v0.7.13
+
+
+
+
+
+- **Project list refresh fix + dedicated Projects tab.** Bug fix:
+
+
+  creating a project from inside the Downloads / Uploads add panel via
+
+
+  the inline *+ New project* button updated `STATE` but did not
+
+
+  repopulate the open form's `<select>`, so the new project only
+
+
+  appeared after closing and reopening the panel. Now every
+
+
+  project-related select on the page is repopulated and the new id is
+
+
+  preselected in the originating dropdown. New **🗂️ Projects** tab
+
+
+  with search, expand-all / collapse-all, and per-project collapsible
+
+
+  cards (member table, slug, schedule and auto-delete pills, edit form
+
+
+  with rename / auto-delete datetime / auto-sync schedule preset).
+
+
+  Backend gains `auto_sync_schedule` on projects and a
+
+
+  `POST /api/projects/<pid>/sync` endpoint that queues every active
+
+
+  download / upload tagged with that project.
+
+
+
+
+
+### v0.7.12
+
+
+
+
+
+- **Cross-platform CPU temp + health threshold alerts.** The System and
+
+
+  Dashboard tabs (and the footer status line) now show CPU temperature,
+
+
+  CPU load %, memory %, and swap %. Reads come from a new cross-platform
+
+
+  probe — Linux: `/sys/class/thermal` then `/sys/class/hwmon` (including
+
+
+  `ath10k_hwmon` on GL-iNet routers as a thermal proxy); Windows: WMI
+
+
+  `MSAcpi_ThermalZoneTemperature`; macOS skipped (powermetrics is
+
+
+  root-only). New **Health Alert Thresholds** panel under
+
+
+  *🔔 Notifications* with knobs for `cpu_load_pct`, `mem_used_pct`,
+
+
+  `swap_used_pct`, `cpu_temp_c`, `sustain_secs`, `cooldown_secs` and an
+
+
+  enable toggle. The autosync loop runs a per-metric sustain timer and
+
+
+  emits a single combined `system.health_warning` event (severity *warn*)
+
+
+  to every enabled webhook channel; after firing, that metric is silenced
+
+
+  for `cooldown_secs` to avoid spam. New endpoints:
+
+
+  `GET`/`PATCH /api/notifications/health`.
+
+
+
+
+
+### v0.7.11
+
+
+
+
+
+- **Disclaimer + skill prerequisites.** README and `INSTRUCTIONS.md` now
+
+
+  open with a *Heads-up before you start* section: this is well-tested
+
+
+  only on the GL-A1300 / GL firmware 4.7.x; Pi / Linux / macOS / Windows
+
+
+  are explicitly secondary at this stage. Adds a *why this exists* note
+
+
+  from the author and lists the skills you should already have (SSH,
+
+
+  OpenWrt / UCI basics, USB mounting on Linux / OpenWrt, Python 3.9+,
+
+
+  Google Cloud OAuth + Dropbox app token, basic networking, optional
+
+
+  SMB) so users know this is an intermediate-level setup rather than
+
+
+  plug-and-play.
+
+
+- **Multi-project tagging.** Downloads and uploads now carry an ordered
+
+
+  list of project ids (`project_ids`) in addition to the existing
+
+
+  primary `project_id`. The primary still controls the on-disk path;
+
+
+  each additional project is treated as a mirror tag. After every
+
+
+  successful sync the daemon copies the synced folder into each
+
+
+  additional project's folder on the same drive (`downloads/<slug>/`
+
+
+  or `uploads/<provider>/<slug>/`), bounded to the drive's mountpoint.
+
+
+  Implemented via a new `JobManager.on_complete` hook +
+
+
+  `App._post_sync_mirror` using `shutil.copytree(dirs_exist_ok=True)`.
+
+
+  Errors are logged but do not fail the originating job. UI: download
+
+
+  add, upload add and entry-edit dialogs gained an *Additional projects*
+
+
+  picker + chip area + *+ Tag* button; project cells in the tables now
+
+
+  render every tag as a pill (primary highlighted).
+
+
+- **Auto-purge.** Downloads, uploads and projects gained an
+
+
+  `auto_delete_at` field (epoch seconds; nullable). The autosync loop
+
+
+  removes expired downloads (full delete), uploads (rmtree of staging
+
+
+  dir + record removal) and projects (cascades to every download /
+
+
+  upload tagged with that project, primary or mirror). Mirror folders
+
+
+  for purged entries are removed too, bounded to the source drive's
+
+
+  mountpoint. UI gains a *Auto-delete on* `datetime-local` input on the
+
+
+  add / edit forms; empty value = keep forever.
+
+
+- **Bug fix.** The `GET /api/downloads` list endpoint had been orphaned
+
+
+  (the dispatch line was lost), causing the daemon to 404 on download
+
+
+  list requests. Restored.
+
+
+
+
+
+### v0.7.10 (initial public release)
 
 
 
