@@ -12,6 +12,11 @@ NAME=botsync
 SYNC_DIRS="/mnt/sync /tmp/mountd"
 
 find_botsync_root() {
+    # Pass 1: prefer any drive whose marker has "primary": true, regardless
+    # of mount-point alphabetical order. This survives USB device-name
+    # shuffles (sda<->sdb swap on reboot) that would otherwise let a
+    # non-primary drive at /tmp/mountd/disk1_part1 win over the real
+    # primary at /tmp/mountd/disk2_part1.
     for base in $SYNC_DIRS; do
         [ -d "$base" ] || continue
         for d in "$base"/*; do
@@ -20,6 +25,15 @@ find_botsync_root() {
             if grep -q '"primary": *true' "$d/.botsync_marker" 2>/dev/null; then
                 echo "$d"; return 0
             fi
+        done
+    done
+    # Pass 2: fall back to the first drive that has *any* marker. Covers
+    # fresh installs where no drive has been promoted to primary yet.
+    for base in $SYNC_DIRS; do
+        [ -d "$base" ] || continue
+        for d in "$base"/*; do
+            [ -d "$d" ] || continue
+            [ -f "$d/.botsync_marker" ] || continue
             echo "$d"; return 0
         done
     done
