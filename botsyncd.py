@@ -55,7 +55,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Constants & defaults
 # ---------------------------------------------------------------------------
 
-VERSION = "0.7.18"
+VERSION = "0.7.19"
 # GitHub repo used by the in-app update notifier. Compared against the latest
 # commit on the default branch to surface a banner when a new build is out.
 UPSTREAM_REPO = "mr-tbot/bot-sync"
@@ -3513,9 +3513,68 @@ class App:
                         logger.exception("cancel jobs on primary_missing")
         return out
 
+    # ------- connectivity probe -------
+
+    # TCP probes used to confirm internet is up before we start hitting
+    # cloud APIs at boot. Order is intentional: GitHub first because the
+    # update checks talk to it; 1.1.1.1:443 and 8.8.8.8:53 are fallbacks
+    # in case GitHub is filtered on the venue network but general internet
+    # still works. Plain TCP connect — no DNS for the IP probes — so this
+    # tolerates dnsmasq still warming up.
+    _NET_PROBES: Tuple[Tuple[str, int], ...] = (
+        ("api.github.com", 443),
+        ("1.1.1.1", 443),
+        ("8.8.8.8", 53),
+    )
+
+    def _internet_up(self, timeout: float = 3.0) -> bool:
+        """Cheap TCP probe — true if any of ``_NET_PROBES`` connects."""
+        for host, port in self._NET_PROBES:
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _wait_for_internet(self, max_wait: int = 600,
+                           probe_interval: int = 5) -> bool:
+        """Block (respecting ``_stop_event`` if it exists yet) until the
+        internet looks reachable or ``max_wait`` seconds have elapsed.
+        Returns True if connectivity was confirmed, False on timeout or
+        shutdown. Used at boot so we don't fire a wave of \"account
+        unreachable\" notifications before the WAN is up.
+
+        ``_stop_event`` is created partway through ``App.__init__``; threads
+        spawned earlier may invoke this before the attribute exists, so we
+        look it up lazily and fall back to a plain ``time.sleep``.
+        """
+        deadline = time.time() + max(0, max_wait)
+        while True:
+            stop = getattr(self, "_stop_event", None)
+            if stop is not None and stop.is_set():
+                return False
+            if self._internet_up():
+                return True
+            if time.time() >= deadline:
+                return False
+            if stop is not None:
+                if stop.wait(probe_interval):
+                    return False
+            else:
+                time.sleep(probe_interval)
+
     # ------- health loop -------
 
     def _health_loop(self) -> None:
+        # Wait for the WAN to come up before the first remote_ping pass, with
+        # a hard cap so a permanently offline router still eventually runs
+        # the loop (which is harmless — failed pings just mark health=error
+        # locally; the false \"unreachable\" Discord notification is what we
+        # want to suppress). The cap is generous because GL-iNet routers can
+        # take a while to acquire a DHCP lease / repeater association after
+        # a cold boot.
+        self._wait_for_internet(max_wait=600, probe_interval=5)
         while True:
             # Refresh the rclone.conf backup on every health pass so token
             # refreshes performed by rclone itself are captured. snapshot_conf
@@ -3776,6 +3835,9 @@ class App:
         # Initial delay so we don't hammer the network at boot.
         if self._stop_event.wait(60):
             return
+        # Also wait for actual internet before the first check so we don't
+        # log a spurious \"check_error\" right after boot.
+        self._wait_for_internet(max_wait=600, probe_interval=5)
         while not self._stop_event.is_set():
             try:
                 self.refresh_rclone_status(notify=True)
